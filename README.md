@@ -1,1 +1,1 @@
-# Patient-Zero
+# Patient Zero
