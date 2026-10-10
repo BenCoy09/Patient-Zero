@@ -1,0 +1,5 @@
+flask
+pytest
+neatlogs[openai]
+openai
+python-dotenv
