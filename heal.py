@@ -48,19 +48,17 @@ PORT = "5000"
 VERIFY_BASE_URL = "http://localhost:5001"
 VERIFY_PORT = "5001"
 
-DETECT_SYSTEM = (
-    "You are a senior Python debugging assistant. "
-    "Given a Flask crash traceback and the application source, identify the single "
-    "root cause of the crash. Respond ONLY with JSON of the form "
-    '{"root_cause": "<concise explanation>"}.'
-)
-
 DIAGNOSE_SYSTEM = (
-    "You are a senior Python engineer. Given the root cause of a Flask crash and the "
-    "current source of app/__init__.py, produce a corrected FULL replacement of the "
-    "file that fixes the crash while preserving all existing behavior and routes. "
-    "Do not add new dependencies. Respond ONLY with JSON of the form "
-    '{"corrected_file": "<complete contents of app/__init__.py>"}.'
+    "You are a senior Python engineer. Given a Flask crash traceback and the "
+    "current source of app/__init__.py, identify the single root cause of the crash "
+    "and produce a corrected FULL replacement of the file that fixes the crash while "
+    "preserving all existing behavior and routes. Do not add new dependencies. "
+    "Respond in EXACTLY this plain-text format, with no other commentary:\n"
+    "ROOT CAUSE: <one short paragraph>\n"
+    "FILE:\n"
+    "```python\n"
+    "<complete contents of app/__init__.py>\n"
+    "```"
 )
 
 ANTIBODY_TEMPLATE = '''import pytest
@@ -97,19 +95,22 @@ def count_crashed(attack_stdout):
     )
 
 
-def parse_json(text):
-    text = text.strip()
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
-    if fence:
-        text = fence.group(1).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1:
-            return json.loads(text[start : end + 1])
-        raise
+def parse_diagnosis(text):
+    cause_marker = "ROOT CAUSE:"
+    file_marker = "FILE:"
+    cause_idx = text.find(cause_marker)
+    file_idx = text.find(file_marker)
+    if cause_idx == -1 or file_idx == -1 or file_idx < cause_idx:
+        raise ValueError("response is missing the ROOT CAUSE:/FILE: markers")
+    root_cause = text[cause_idx + len(cause_marker) : file_idx].strip()
+    file_text = text[file_idx + len(file_marker) :]
+    block = re.search(r"```(?:python)?\s*\n?(.*?)```", file_text, re.S)
+    if not block:
+        raise ValueError("response is missing the python code block")
+    corrected_file = block.group(1).strip("\n").rstrip() + "\n"
+    if not root_cause or not corrected_file.strip():
+        raise ValueError("response has an empty root cause or file")
+    return root_cause, corrected_file
 
 
 def wait_for_health(health_url, timeout=20.0):
@@ -125,7 +126,7 @@ def wait_for_health(health_url, timeout=20.0):
     return False
 
 
-def detect(traceback_text, source, crashed_count):
+def detect(crashed_count):
     with neatlogs.trace("detect", kind="CHAIN") as span:
         span.set_attribute("attacks.crashed", crashed_count)
         if crashed_count > 0:
@@ -135,26 +136,9 @@ def detect(traceback_text, source, crashed_count):
         else:
             span.set_status(Status(StatusCode.OK))
 
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": DETECT_SYSTEM},
-                {
-                    "role": "user",
-                    "content": (
-                        f"TRACEBACK:\n{traceback_text}\n\n"
-                        f"SOURCE (app/__init__.py):\n{source}"
-                    ),
-                },
-            ],
-        )
-        result = response.choices[0].message.content
-        span.set_attribute("output.value", result)
-        return result
-
 
 @neatlogs.span(kind="CHAIN", name="diagnose")
-def diagnose(root_cause, traceback_text, source):
+def diagnose(traceback_text, source):
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
@@ -162,7 +146,6 @@ def diagnose(root_cause, traceback_text, source):
             {
                 "role": "user",
                 "content": (
-                    f"ROOT CAUSE:\n{root_cause}\n\n"
                     f"TRACEBACK:\n{traceback_text}\n\n"
                     f"CURRENT app/__init__.py:\n{source}"
                 ),
@@ -305,13 +288,22 @@ def main():
         traceback_text = extract_traceback(log_text)
         source = APP_INIT.read_text(encoding="utf-8")
 
-        detect_result = parse_json(detect(traceback_text, source, crashed_count))
-        root_cause = detect_result.get("root_cause", "").strip()
+        detect(crashed_count)
 
-        diagnose_result = parse_json(diagnose(root_cause, traceback_text, source))
-        corrected_file = diagnose_result.get("corrected_file", "")
-        if isinstance(corrected_file, str):
-            corrected_file = corrected_file.rstrip("\n") + "\n"
+        root_cause = None
+        corrected_file = None
+        raw = ""
+        for attempt in range(3):
+            raw = diagnose(traceback_text, source)
+            try:
+                root_cause, corrected_file = parse_diagnosis(raw)
+                break
+            except ValueError as exc:
+                print(f"Diagnosis parse failed (attempt {attempt + 1}/3): {exc}")
+        else:
+            print("Diagnosis parsing failed after 3 attempts. Raw response:")
+            print(raw)
+            return 1
 
         print("\n=== DIAGNOSIS ===")
         print(f"Root cause: {root_cause}")
