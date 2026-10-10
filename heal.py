@@ -254,6 +254,7 @@ def append_lesson(cause, fix, verified, attacks_not_covered):
     return LESSONS
 
 
+@neatlogs.span(kind="WORKFLOW", name="patient-zero-heal")
 def main():
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(LOG_PATH, "w")
@@ -329,9 +330,11 @@ def main():
         return 0
     finally:
         stop_server(server, log_file)
-        neatlogs.flush()
-        neatlogs.shutdown()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    finally:
+        neatlogs.flush()
+        neatlogs.shutdown()

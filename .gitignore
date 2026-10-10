@@ -5,3 +5,5 @@ __pycache__/
 __pycache__/
 .pytest_cache/
 quarantine/
+desktop.ini
+docs/Screenshots/
