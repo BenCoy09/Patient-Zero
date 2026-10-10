@@ -1,0 +1,18 @@
+[
+  {
+    "cause": "The `add_item` endpoint assumes `request.get_json()` always returns a dictionary or `None`, but valid JSON request bodies can also be a top-level array. When a client sends a non-empty JSON list, `request.get_json(silent=True) or {}` evaluates to the `list`, causing an `AttributeError` when attempting to call `.get(\"name\")`.",
+    "fix": "from flask import Flask, jsonify, request\n\n\ndef create_app():\n    app = Flask(__name__)\n    items = []\n\n    @app.get(\"/health\")\n    def health():\n        return jsonify(status=\"ok\")\n\n    @app.post(\"/items\")\n    def add_item():\n        data = request.get_json(silent=True)\n        if not isinstance(data, dict):\n            data = {}\n        name = data.get(\"name\")\n        if not name:\n            return jsonify(error=\"name is required\"), 400\n        item = {\"id\": len(items) + 1, \"name\": name}\n        items.append(item)\n        return jsonify(item), 201\n\n    @app.get(\"/items\")\n    def list_items():\n        return jsonify(items)\n\n    return app\n",
+    "verified": true,
+    "attacks_not_covered": [
+      null,
+      [
+        [
+          1
+        ]
+      ],
+      {
+        "name": 123
+      }
+    ]
+  }
+]

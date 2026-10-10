@@ -11,7 +11,9 @@ def create_app():
 
     @app.post("/items")
     def add_item():
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            data = {}
         name = data.get("name")
         if not name:
             return jsonify(error="name is required"), 400

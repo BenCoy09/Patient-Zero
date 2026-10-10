@@ -1,0 +1,13 @@
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://127.0.0.1:5001
+[33mPress CTRL+C to quit[0m
+127.0.0.1 - - [10/Oct/2026 17:05:44] "GET /health HTTP/1.1" 200 -
+127.0.0.1 - - [10/Oct/2026 17:05:44] "[31m[1mPOST /items HTTP/1.1[0m" 400 -
+127.0.0.1 - - [10/Oct/2026 17:05:44] "[31m[1mPOST /items HTTP/1.1[0m" 400 -
+127.0.0.1 - - [10/Oct/2026 17:05:44] "[31m[1mPOST /items HTTP/1.1[0m" 400 -
+127.0.0.1 - - [10/Oct/2026 17:05:44] "[31m[1mPOST /items HTTP/1.1[0m" 400 -
+127.0.0.1 - - [10/Oct/2026 17:05:44] "[31m[1mPOST /items HTTP/1.1[0m" 400 -
+127.0.0.1 - - [10/Oct/2026 17:05:44] "[31m[1mPOST /items HTTP/1.1[0m" 400 -
+127.0.0.1 - - [10/Oct/2026 17:05:44] "[35m[1mPOST /items HTTP/1.1[0m" 201 -

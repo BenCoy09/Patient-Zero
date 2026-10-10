@@ -3,8 +3,8 @@
 [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
  * Running on http://127.0.0.1:5000
 [33mPress CTRL+C to quit[0m
-127.0.0.1 - - [10/Oct/2026 16:48:27] "GET /health HTTP/1.1" 200 -
-[2026-10-10 16:48:27,729] ERROR in app: Exception on /items [POST]
+127.0.0.1 - - [10/Oct/2026 17:04:32] "GET /health HTTP/1.1" 200 -
+[2026-10-10 17:04:32,997] ERROR in app: Exception on /items [POST]
 Traceback (most recent call last):
   File "/home/hpbenny/patient-zero/.venv/lib/python3.13/site-packages/flask/app.py", line 1511, in wsgi_app
     response = self.full_dispatch_request()
@@ -19,8 +19,8 @@ Traceback (most recent call last):
     name = data.get("name")
            ^^^^^^^^
 AttributeError: 'list' object has no attribute 'get'
-127.0.0.1 - - [10/Oct/2026 16:48:27] "[35m[1mPOST /items HTTP/1.1[0m" 500 -
-[2026-10-10 16:48:27,736] ERROR in app: Exception on /items [POST]
+127.0.0.1 - - [10/Oct/2026 17:04:33] "[35m[1mPOST /items HTTP/1.1[0m" 500 -
+[2026-10-10 17:04:33,003] ERROR in app: Exception on /items [POST]
 Traceback (most recent call last):
   File "/home/hpbenny/patient-zero/.venv/lib/python3.13/site-packages/flask/app.py", line 1511, in wsgi_app
     response = self.full_dispatch_request()
@@ -35,8 +35,8 @@ Traceback (most recent call last):
     name = data.get("name")
            ^^^^^^^^
 AttributeError: 'str' object has no attribute 'get'
-127.0.0.1 - - [10/Oct/2026 16:48:27] "[35m[1mPOST /items HTTP/1.1[0m" 500 -
-[2026-10-10 16:48:27,741] ERROR in app: Exception on /items [POST]
+127.0.0.1 - - [10/Oct/2026 17:04:33] "[35m[1mPOST /items HTTP/1.1[0m" 500 -
+[2026-10-10 17:04:33,008] ERROR in app: Exception on /items [POST]
 Traceback (most recent call last):
   File "/home/hpbenny/patient-zero/.venv/lib/python3.13/site-packages/flask/app.py", line 1511, in wsgi_app
     response = self.full_dispatch_request()
@@ -51,9 +51,9 @@ Traceback (most recent call last):
     name = data.get("name")
            ^^^^^^^^
 AttributeError: 'int' object has no attribute 'get'
-127.0.0.1 - - [10/Oct/2026 16:48:27] "[35m[1mPOST /items HTTP/1.1[0m" 500 -
-127.0.0.1 - - [10/Oct/2026 16:48:27] "[31m[1mPOST /items HTTP/1.1[0m" 400 -
-[2026-10-10 16:48:27,748] ERROR in app: Exception on /items [POST]
+127.0.0.1 - - [10/Oct/2026 17:04:33] "[35m[1mPOST /items HTTP/1.1[0m" 500 -
+127.0.0.1 - - [10/Oct/2026 17:04:33] "[31m[1mPOST /items HTTP/1.1[0m" 400 -
+[2026-10-10 17:04:33,014] ERROR in app: Exception on /items [POST]
 Traceback (most recent call last):
   File "/home/hpbenny/patient-zero/.venv/lib/python3.13/site-packages/flask/app.py", line 1511, in wsgi_app
     response = self.full_dispatch_request()
@@ -68,8 +68,8 @@ Traceback (most recent call last):
     name = data.get("name")
            ^^^^^^^^
 AttributeError: 'bool' object has no attribute 'get'
-127.0.0.1 - - [10/Oct/2026 16:48:27] "[35m[1mPOST /items HTTP/1.1[0m" 500 -
-[2026-10-10 16:48:27,752] ERROR in app: Exception on /items [POST]
+127.0.0.1 - - [10/Oct/2026 17:04:33] "[35m[1mPOST /items HTTP/1.1[0m" 500 -
+[2026-10-10 17:04:33,018] ERROR in app: Exception on /items [POST]
 Traceback (most recent call last):
   File "/home/hpbenny/patient-zero/.venv/lib/python3.13/site-packages/flask/app.py", line 1511, in wsgi_app
     response = self.full_dispatch_request()
@@ -84,5 +84,5 @@ Traceback (most recent call last):
     name = data.get("name")
            ^^^^^^^^
 AttributeError: 'list' object has no attribute 'get'
-127.0.0.1 - - [10/Oct/2026 16:48:27] "[35m[1mPOST /items HTTP/1.1[0m" 500 -
-127.0.0.1 - - [10/Oct/2026 16:48:27] "[35m[1mPOST /items HTTP/1.1[0m" 201 -
+127.0.0.1 - - [10/Oct/2026 17:04:33] "[35m[1mPOST /items HTTP/1.1[0m" 500 -
+127.0.0.1 - - [10/Oct/2026 17:04:33] "[35m[1mPOST /items HTTP/1.1[0m" 201 -
