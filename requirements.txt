@@ -3,3 +3,4 @@ pytest
 neatlogs[openai]
 openai
 python-dotenv
+requests
