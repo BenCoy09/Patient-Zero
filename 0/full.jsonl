@@ -1,0 +1,251 @@
+{
+  "info": {
+    "id": "ses_eda8684dbffeirMpe4JWyO2kh1",
+    "slug": "playful-forest",
+    "projectID": "3d180bdb2f00df3944c5f613207a4622ec9d8aa4",
+    "directory": "/home/hpbenny/patient-zero",
+    "path": "",
+    "title": "Creating hello.md with one line",
+    "agent": "build",
+    "model": {
+      "id": "big-pickle",
+      "providerID": "opencode"
+    },
+    "version": "1.18.35",
+    "summary": {
+      "additions": 0,
+      "deletions": 0,
+      "files": 0
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 6811,
+      "output": 78,
+      "reasoning": 0,
+      "cache": {
+        "read": 10240,
+        "write": 0
+      }
+    },
+    "time": {
+      "created": 1791630080804,
+      "updated": 1791630087018
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1791630080902
+        },
+        "agent": "build",
+        "model": {
+          "providerID": "opencode",
+          "modelID": "big-pickle"
+        },
+        "summary": {
+          "diffs": [
+            {
+              "file": "hello.md",
+              "patch": "Index: hello.md\n===================================================================\n--- hello.md\t\n+++ hello.md\t\n@@ -0,0 +1,1 @@\n+Hello, World!\n",
+              "additions": 1,
+              "deletions": 0,
+              "status": "added"
+            }
+          ]
+        },
+        "id": "msg_125797b86001mgKjknOF4Tw4zr",
+        "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "Create a file caled hello.md with one line of text",
+          "id": "prt_125797b8f001LHRPPC0mJ1gDIW",
+          "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1",
+          "messageID": "msg_125797b86001mgKjknOF4Tw4zr"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_125797b86001mgKjknOF4Tw4zr",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "/home/hpbenny/patient-zero",
+          "root": "/home/hpbenny/patient-zero"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 8554,
+          "input": 6689,
+          "output": 73,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 1792
+          }
+        },
+        "modelID": "big-pickle",
+        "providerID": "opencode",
+        "time": {
+          "created": 1791630081372,
+          "completed": 1791630087003
+        },
+        "finish": "tool-calls",
+        "id": "msg_125797d5c001pKy456GpgEcLq2",
+        "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1"
+      },
+      "parts": [
+        {
+          "snapshot": "8272bfbdf8336aaef747fe42b5210176765ae139",
+          "type": "step-start",
+          "id": "prt_125799089001VJEdCz7JiTNEAi",
+          "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1",
+          "messageID": "msg_125797d5c001pKy456GpgEcLq2"
+        },
+        {
+          "type": "text",
+          "text": "I'll create that file.",
+          "time": {
+            "start": 1791630086367,
+            "end": 1791630086642
+          },
+          "id": "prt_1257990df001hTEm75BE0KW0pL",
+          "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1",
+          "messageID": "msg_125797d5c001pKy456GpgEcLq2"
+        },
+        {
+          "type": "tool",
+          "tool": "write",
+          "callID": "call_00_2lz64hg48al6d8siwpp1s7zi",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/home/hpbenny/patient-zero/hello.md",
+              "content": "Hello, World!\n"
+            },
+            "output": "Wrote file successfully.",
+            "metadata": {
+              "diagnostics": {},
+              "filepath": "/home/hpbenny/patient-zero/hello.md",
+              "exists": false,
+              "truncated": false
+            },
+            "title": "hello.md",
+            "time": {
+              "start": 1791630086538,
+              "end": 1791630086630
+            }
+          },
+          "id": "prt_1257990ea0018CeWrNhMayccKt",
+          "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1",
+          "messageID": "msg_125797d5c001pKy456GpgEcLq2"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "25d683848bf5db2d8f3d46f6a9fdaf705bbe8b5a",
+          "type": "step-finish",
+          "tokens": {
+            "total": 8554,
+            "input": 6689,
+            "output": 73,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 1792
+            }
+          },
+          "cost": 0,
+          "id": "prt_1257992d9001NEFdOPybmpbDBA",
+          "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1",
+          "messageID": "msg_125797d5c001pKy456GpgEcLq2"
+        },
+        {
+          "type": "patch",
+          "hash": "8272bfbdf8336aaef747fe42b5210176765ae139",
+          "files": [
+            "/home/hpbenny/patient-zero/hello.md"
+          ],
+          "id": "prt_1257993520017ZZ1y4qECyb3I2",
+          "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1",
+          "messageID": "msg_125797d5c001pKy456GpgEcLq2"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_125797b86001mgKjknOF4Tw4zr",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "/home/hpbenny/patient-zero",
+          "root": "/home/hpbenny/patient-zero"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 8575,
+          "input": 122,
+          "output": 5,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 8448
+          }
+        },
+        "modelID": "big-pickle",
+        "providerID": "opencode",
+        "time": {
+          "created": 1791630087012,
+          "completed": 1791630088971
+        },
+        "finish": "stop",
+        "id": "msg_125799364001y75lpIo4oqTEjN",
+        "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1"
+      },
+      "parts": [
+        {
+          "snapshot": "25d683848bf5db2d8f3d46f6a9fdaf705bbe8b5a",
+          "type": "step-start",
+          "id": "prt_125799a97001CClKk7vE22MbgJ",
+          "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1",
+          "messageID": "msg_125799364001y75lpIo4oqTEjN"
+        },
+        {
+          "type": "text",
+          "text": "Created hello.md.",
+          "time": {
+            "start": 1791630088862,
+            "end": 1791630088873
+          },
+          "id": "prt_125799a9e001VK4v6DWMFCtkqo",
+          "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1",
+          "messageID": "msg_125799364001y75lpIo4oqTEjN"
+        },
+        {
+          "reason": "stop",
+          "snapshot": "25d683848bf5db2d8f3d46f6a9fdaf705bbe8b5a",
+          "type": "step-finish",
+          "tokens": {
+            "total": 8575,
+            "input": 122,
+            "output": 5,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 8448
+            }
+          },
+          "cost": 0,
+          "id": "prt_125799ac4001sAPdOAFCL0k5gS",
+          "sessionID": "ses_eda8684dbffeirMpe4JWyO2kh1",
+          "messageID": "msg_125799364001y75lpIo4oqTEjN"
+        }
+      ]
+    }
+  ]
+}
