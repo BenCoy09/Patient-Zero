@@ -1,0 +1,807 @@
+{
+  "info": {
+    "id": "ses_ed960506cffeOYcopLkwPm1DSp",
+    "slug": "jolly-wizard",
+    "projectID": "3d180bdb2f00df3944c5f613207a4622ec9d8aa4",
+    "directory": "/home/hpbenny/patient-zero",
+    "path": "",
+    "title": "Wrap main() in neatlogs span in heal.py",
+    "agent": "build",
+    "model": {
+      "id": "big-pickle",
+      "providerID": "opencode"
+    },
+    "version": "1.18.35",
+    "summary": {
+      "additions": 0,
+      "deletions": 0,
+      "files": 0
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 19355,
+      "output": 804,
+      "reasoning": 3449,
+      "cache": {
+        "read": 90880,
+        "write": 0
+      }
+    },
+    "time": {
+      "created": 1791649361811,
+      "updated": 1791649411512
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1791649361883
+        },
+        "agent": "build",
+        "model": {
+          "providerID": "opencode",
+          "modelID": "big-pickle"
+        },
+        "summary": {
+          "diffs": [
+            {
+              "file": "heal.py",
+              "patch": "Index: heal.py\n===================================================================\n--- heal.py\t\n+++ heal.py\t\n@@ -1,337 +1,340 @@\n import json\n import os\n import re\n import subprocess\n import sys\n import time\n from pathlib import Path\n \n import requests\n from dotenv import load_dotenv\n \n import attack\n \n load_dotenv()\n \n NEATLOGS_API_KEY = os.environ[\"NEATLOGS_API_KEY\"]\n GEMINI_API_KEY = os.environ[\"GEMINI_API_KEY\"]\n \n import neatlogs\n from opentelemetry.trace import Status, StatusCode\n \n neatlogs.init(\n     api_key=NEATLOGS_API_KEY,\n     workflow_name=\"heal\",\n )\n \n from openai import OpenAI\n \n client = neatlogs.wrap(\n     OpenAI(\n         api_key=GEMINI_API_KEY,\n         base_url=\"https://generativelanguage.googleapis.com/v1beta/openai/\",\n     )\n )\n \n ROOT = Path(__file__).resolve().parent\n APP_INIT = ROOT / \"app\" / \"__init__.py\"\n LOG_PATH = ROOT / \"evidence\" / \"app_run.log\"\n VERIFY_LOG_PATH = ROOT / \"evidence\" / \"quarantine_run.log\"\n QUARANTINE = ROOT / \"quarantine\" / \"app\" / \"__init__.py\"\n LESSONS = ROOT / \"lessons.json\"\n ANTIBODY_TEST = ROOT / \"tests\" / \"test_antibody.py\"\n ANTIBODY_PAYLOADS = [[1, 2], \"hello\", 123, True]\n MODEL = \"gemini-3.8-flash\"\n BASE_URL = \"http://localhost:5000\"\n HEALTH_URL = f\"{BASE_URL}/health\"\n PORT = \"5000\"\n VERIFY_BASE_URL = \"http://localhost:5001\"\n VERIFY_PORT = \"5001\"\n \n DIAGNOSE_SYSTEM = (\n     \"You are a senior Python engineer. Given a Flask crash traceback and the \"\n     \"current source of app/__init__.py, identify the single root cause of the crash \"\n     \"and produce a corrected FULL replacement of the file that fixes the crash while \"\n     \"preserving all existing behavior and routes. Do not add new dependencies. \"\n     \"Respond in EXACTLY this plain-text format, with no other commentary:\\n\"\n     \"ROOT CAUSE: <one short paragraph>\\n\"\n     \"FILE:\\n\"\n     \"```python\\n\"\n     \"<complete contents of app/__init__.py>\\n\"\n     \"```\"\n )\n \n ANTIBODY_TEMPLATE = '''import pytest\n \n from app import create_app\n \n \n @pytest.fixture\n def client():\n     app = create_app()\n     app.config[\"TESTING\"] = True\n     with app.test_client() as c:\n         yield c\n \n \n @pytest.mark.parametrize(\"payload\", {payloads})\n def test_rejects_malformed_item(client, payload):\n     resp = client.post(\"/items\", json=payload)\n     assert resp.status_code == 400\n '''\n \n \n def extract_traceback(log_text):\n     marker = \"Traceback (most recent call last):\"\n     idx = log_text.rfind(marker)\n     if idx == -1:\n         return log_text.strip()\n     return log_text[idx:].strip()\n \n \n def count_crashed(attack_stdout):\n     return sum(\n         1 for line in attack_stdout.splitlines() if line.rstrip().endswith(\"CRASH\")\n     )\n \n \n def parse_diagnosis(text):\n     cause_marker = \"ROOT CAUSE:\"\n     file_marker = \"FILE:\"\n     cause_idx = text.find(cause_marker)\n     file_idx = text.find(file_marker)\n     if cause_idx == -1 or file_idx == -1 or file_idx < cause_idx:\n         raise ValueError(\"response is missing the ROOT CAUSE:/FILE: markers\")\n     root_cause = text[cause_idx + len(cause_marker) : file_idx].strip()\n     file_text = text[file_idx + len(file_marker) :]\n     block = re.search(r\"```(?:python)?\\s*\\n?(.*?)```\", file_text, re.S)\n     if not block:\n         raise ValueError(\"response is missing the python code block\")\n     corrected_file = block.group(1).strip(\"\\n\").rstrip() + \"\\n\"\n     if not root_cause or not corrected_file.strip():\n         raise ValueError(\"response has an empty root cause or file\")\n     return root_cause, corrected_file\n \n \n def wait_for_health(health_url, timeout=20.0):\n     deadline = time.time() + timeout\n     while time.time() < deadline:\n         try:\n             resp = requests.get(health_url, timeout=1)\n             if resp.status_code == 200:\n                 return True\n         except requests.RequestException:\n             pass\n         time.sleep(0.3)\n     return False\n \n \n def detect(crashed_count):\n     with neatlogs.trace(\"detect\", kind=\"CHAIN\") as span:\n         span.set_attribute(\"attacks.crashed\", crashed_count)\n         if crashed_count > 0:\n             span.set_status(\n                 Status(StatusCode.ERROR, f\"{crashed_count} attack(s) returned 5xx\")\n             )\n         else:\n             span.set_status(Status(StatusCode.OK))\n \n \n @neatlogs.span(kind=\"CHAIN\", name=\"diagnose\")\n def diagnose(traceback_text, source):\n     response = client.chat.completions.create(\n         model=MODEL,\n         messages=[\n             {\"role\": \"system\", \"content\": DIAGNOSE_SYSTEM},\n             {\n                 \"role\": \"user\",\n                 \"content\": (\n                     f\"TRACEBACK:\\n{traceback_text}\\n\\n\"\n                     f\"CURRENT app/__init__.py:\\n{source}\"\n                 ),\n             },\n         ],\n     )\n     return response.choices[0].message.content\n \n \n def stop_server(server, log_file):\n     server.terminate()\n     try:\n         server.wait(timeout=10)\n     except subprocess.TimeoutExpired:\n         server.kill()\n         server.wait()\n     log_file.close()\n \n \n @neatlogs.span(kind=\"CHAIN\", name=\"quarantine\")\n def quarantine(corrected_file):\n     QUARANTINE.parent.mkdir(parents=True, exist_ok=True)\n     QUARANTINE.write_text(corrected_file, encoding=\"utf-8\")\n     return QUARANTINE\n \n \n @neatlogs.span(kind=\"CHAIN\", name=\"verify\")\n def verify():\n     VERIFY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)\n     log_file = open(VERIFY_LOG_PATH, \"w\")\n     server = subprocess.Popen(\n         [sys.executable, \"-m\", \"flask\", \"--app\", \"app\", \"run\", \"--port\", VERIFY_PORT],\n         cwd=QUARANTINE.parent.parent,\n         stdout=log_file,\n         stderr=subprocess.STDOUT,\n     )\n \n     try:\n         if not wait_for_health(f\"{VERIFY_BASE_URL}/health\"):\n             return \"quarantined app did not become healthy in time\"\n \n         attack = subprocess.run(\n             [sys.executable, \"attack.py\", VERIFY_BASE_URL],\n             cwd=ROOT,\n             capture_output=True,\n             text=True,\n         )\n         print(attack.stdout, end=\"\")\n         if attack.returncode != 0:\n             return \"attack.py still crashes the quarantined app\"\n     finally:\n         stop_server(server, log_file)\n \n     tests = subprocess.run(\n         [sys.executable, \"-m\", \"pytest\", str(ROOT / \"tests\"), \"-q\", \"-o\", \"pythonpath=\"],\n         cwd=QUARANTINE.parent.parent,\n         env={**os.environ, \"PYTHONPATH\": str(QUARANTINE.parent.parent)},\n         capture_output=True,\n         text=True,\n     )\n     print(tests.stdout, end=\"\")\n     if tests.returncode != 0:\n         return \"pytest failed on the quarantined app\"\n \n     return None\n \n \n @neatlogs.span(kind=\"CHAIN\", name=\"promote\")\n def promote():\n     corrected_file = QUARANTINE.read_text(encoding=\"utf-8\")\n     APP_INIT.write_text(corrected_file, encoding=\"utf-8\")\n     return APP_INIT\n \n \n def write_antibody_test():\n     ANTIBODY_TEST.parent.mkdir(parents=True, exist_ok=True)\n     ANTIBODY_TEST.write_text(\n         ANTIBODY_TEMPLATE.format(payloads=repr(ANTIBODY_PAYLOADS)),\n         encoding=\"utf-8\",\n     )\n     return ANTIBODY_TEST\n \n \n def uncovered_attacks():\n     return [body for body in attack.bodies if body not in ANTIBODY_PAYLOADS]\n \n \n def append_lesson(cause, fix, verified, attacks_not_covered):\n     lessons = []\n     if LESSONS.exists():\n         try:\n             loaded = json.loads(LESSONS.read_text(encoding=\"utf-8\"))\n             if isinstance(loaded, list):\n                 lessons = loaded\n         except json.JSONDecodeError:\n             lessons = []\n     lessons.append(\n         {\n             \"cause\": cause,\n             \"fix\": fix,\n             \"verified\": verified,\n             \"attacks_not_covered\": attacks_not_covered,\n         }\n     )\n     LESSONS.write_text(json.dumps(lessons, indent=2) + \"\\n\", encoding=\"utf-8\")\n     return LESSONS\n \n \n+@neatlogs.span(kind=\"WORKFLOW\", name=\"patient-zero-heal\")\n def main():\n     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)\n     log_file = open(LOG_PATH, \"w\")\n     server = subprocess.Popen(\n         [sys.executable, \"-m\", \"flask\", \"--app\", \"app\", \"run\", \"--port\", PORT],\n         cwd=ROOT,\n         stdout=log_file,\n         stderr=subprocess.STDOUT,\n     )\n \n     try:\n         if not wait_for_health(HEALTH_URL):\n             print(\"Flask app did not become healthy in time.\")\n             return 2\n \n         attack = subprocess.run(\n             [sys.executable, \"attack.py\", BASE_URL],\n             cwd=ROOT,\n             capture_output=True,\n             text=True,\n         )\n         print(attack.stdout, end=\"\")\n \n         crashed_count = count_crashed(attack.stdout)\n \n         if attack.returncode != 1:\n             print(f\"attack.py exited {attack.returncode}; no crash detected.\")\n             return 0\n \n         log_file.flush()\n         log_text = LOG_PATH.read_text(encoding=\"utf-8\", errors=\"replace\")\n         traceback_text = extract_traceback(log_text)\n         source = APP_INIT.read_text(encoding=\"utf-8\")\n \n         detect(crashed_count)\n \n         root_cause = None\n         corrected_file = None\n         raw = \"\"\n         for attempt in range(3):\n             raw = diagnose(traceback_text, source)\n             try:\n                 root_cause, corrected_file = parse_diagnosis(raw)\n                 break\n             except ValueError as exc:\n                 print(f\"Diagnosis parse failed (attempt {attempt + 1}/3): {exc}\")\n         else:\n             print(\"Diagnosis parsing failed after 3 attempts. Raw response:\")\n             print(raw)\n             return 1\n \n         print(\"\\n=== DIAGNOSIS ===\")\n         print(f\"Root cause: {root_cause}\")\n         print(\"\\nProposed app/__init__.py:\\n\")\n         print(corrected_file)\n \n         quarantine(corrected_file)\n         print(f\"\\nSaved proposal to {QUARANTINE.relative_to(ROOT)}\")\n \n         reason = verify()\n         if reason is not None:\n             print(f\"Rejected: {reason}\")\n             return 1\n \n         promote()\n         print(f\"Promoted fix to {APP_INIT.relative_to(ROOT)}\")\n \n         write_antibody_test()\n         print(f\"Wrote antibody test to {ANTIBODY_TEST.relative_to(ROOT)}\")\n \n         append_lesson(root_cause, corrected_file, True, uncovered_attacks())\n         print(f\"Appended lesson to {LESSONS.relative_to(ROOT)}\")\n         return 0\n     finally:\n         stop_server(server, log_file)\n-        neatlogs.flush()\n-        neatlogs.shutdown()\n \n \n if __name__ == \"__main__\":\n-    sys.exit(main())\n+    try:\n+        sys.exit(main())\n+    finally:\n+        neatlogs.flush()\n+        neatlogs.shutdown()\n",
+              "additions": 6,
+              "deletions": 3,
+              "status": "modified"
+            }
+          ]
+        },
+        "id": "msg_1269fafdb001qSutedzEGa3DQi",
+        "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "In heal.py, wrap main() in one root neatlogs span named \"patient-zero-heal\" with try/finally, calling neatlogs.flush() and neatlogs.shutdown() in the finally block before any sys.exit, so traces finalize. Check docs.neatlogs.com for the correct calls. Change nothing else. ",
+          "id": "prt_1269fafe20011DoSRzo5MeDSF8",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fafdb001qSutedzEGa3DQi"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_1269fafdb001qSutedzEGa3DQi",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "/home/hpbenny/patient-zero",
+          "root": "/home/hpbenny/patient-zero"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 8633,
+          "input": 89,
+          "output": 76,
+          "reasoning": 20,
+          "cache": {
+            "write": 0,
+            "read": 8448
+          }
+        },
+        "modelID": "big-pickle",
+        "providerID": "opencode",
+        "time": {
+          "created": 1791649362417,
+          "completed": 1791649370780
+        },
+        "finish": "tool-calls",
+        "id": "msg_1269fb1f1001GuDYIyNJe8pNbS",
+        "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp"
+      },
+      "parts": [
+        {
+          "snapshot": "1fdcb1a84193b3facaeb87a2da5a8437b2162721",
+          "type": "step-start",
+          "id": "prt_1269fc8b0001gWy6go7RW7Lsci",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fb1f1001GuDYIyNJe8pNbS"
+        },
+        {
+          "type": "reasoning",
+          "text": "Let me look at heal.py first, and check the docs.neatlogs.com for correct calls.",
+          "time": {
+            "start": 1791649368254,
+            "end": 1791649368454
+          },
+          "id": "prt_1269fc8be001SgnJ0vA3weaA1o",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fb1f1001GuDYIyNJe8pNbS"
+        },
+        {
+          "type": "tool",
+          "tool": "glob",
+          "callID": "call_00_4nr74cgnnjyw2oerwrfix05u",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "**/heal.py"
+            },
+            "output": "/home/hpbenny/patient-zero/heal.py",
+            "metadata": {
+              "count": 1,
+              "truncated": false
+            },
+            "title": "",
+            "time": {
+              "start": 1791649368632,
+              "end": 1791649368873
+            }
+          },
+          "id": "prt_1269fc990001dCjI29WQvjcmYn",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fb1f1001GuDYIyNJe8pNbS"
+        },
+        {
+          "type": "tool",
+          "tool": "webfetch",
+          "callID": "call_01_5uk9kevlirovxb9lozchrojn",
+          "state": {
+            "status": "completed",
+            "input": {
+              "url": "https://docs.neatlogs.com"
+            },
+            "output": "Welcome to Neatlogs\n\n![](/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Fai-search-bg.167zcr41zs-bg.webp&w=3840&q=75&dpl=dpl_B2uAofKk9gXnXPvCU2YXdvhyh2RA)\n\n[![Neatlogs](/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flogo.0052vjd_bglpj.webp&w=256&q=75&dpl=dpl_B2uAofKk9gXnXPvCU2YXdvhyh2RA)docs](/docs)\n\nSearch\n\n⌘K\n\n[](https://github.com/NeatLogs/neatlogs)\n\n[Documentation](/docs)[Ask AI](/ask)[Guides](/guides)[SDK Reference](/sdk)[Integrations](/integrations)[Public API](/api-reference)[CLI](/cli)\n\nDocumentation\n\n[Welcome to Neatlogs](/docs)\n\nQuickstart\n\n[Introduction](/docs/quickstart/introduction)[Instrument with the Wizard](/docs/quickstart/wizard)[Explore the Dashboard](/docs/quickstart/explore-dashboard)[Import Traces](/docs/quickstart/import)\n\nFeatures\n\n[Traces](/docs/features/traces)[Session Replay](/docs/features/session-replay)[Comments](/docs/features/comments)[Detections](/docs/features/detections)[Investigate](/docs/features/ai-search)[Tools & MCPs](/docs/features/tools-mcps)[Analytics](/docs/features/analytics)[Fixes](/docs/features/triage)[Experiments](/docs/features/experiments)\n\nEvals\n\n[Alerts](/docs/features/alerts)[Integrations](/docs/features/integrations)\n\n[FAQ](/docs/faq)\n\n[](https://github.com/NeatLogs/neatlogs)\n\nWelcome to Neatlogs\n\n# Welcome to Neatlogs\n\nCopy PageCopied!\n\nObservability for AI agents: every run traced, every failure caught, every fix tracked.\n\nGet started in one command\n\n$ npx @neatlogs/wizardCopy\n\nThe wizard auto-detects your stack, installs the SDK, and instruments your app — no manual setup. Prefer to wire it up yourself? [Manual setup](/docs/quickstart/introduction).\n\nNeatlogs is an observability platform for AI agents. Instrument your app in one line, then explore traces, catch failures, and collaborate on fixes from a single dashboard.\n\n**Instrument in one line** — two lines of Python and every run (every LLM call, tool call, and retry) lands in your dashboard.\n\n```\npip install -U neatlogs\n```\n\n```\nimport neatlogs\nneatlogs.init()\n```\n\n## [Start here](#start-here)\n\n[\n\n### Introduction\n\nWhat Neatlogs does and how the pieces fit together.\n\n](/docs/quickstart/introduction)[\n\n### Setup Wizard\n\nLet the wizard detect your stack and instrument your code for you.\n\n](/docs/quickstart/wizard)[\n\n### Explore the Dashboard\n\nA guided tour of traces, detections, and Investigate.\n\n](/docs/quickstart/explore-dashboard)[\n\n### Import Traces\n\nBring existing data over from Langfuse, LangSmith, Braintrust, Raindrop, Phoenix, or Laminar.\n\n](/docs/quickstart/import)\n\n## [Go deeper](#go-deeper)\n\n[\n\n### Features\n\nTraces, detections, Investigate, analytics, Fixes, experiments, and alerts.\n\n](/docs/features/traces)[\n\n### Integrations\n\nSetup guides for 25+ providers, frameworks, and developer tools.\n\n](/integrations)[\n\n### Guides\n\nEnd-to-end walkthroughs: RAG, multi-agent, chatbots, MCP.\n\n](/guides/rag-pipeline)[\n\n### SDK Reference\n\nPython, TypeScript, and Browser SDKs, plus HTTP trace injection.\n\n](/sdk)[\n\n### FAQ\n\nAnswers to common questions about Neatlogs.\n\n](/docs/faq)\n\n[\n\nIntroduction\n\nNext Page\n\n](/docs/quickstart/introduction)\n\n### On this page\n\n[\n\nStart here](#start-here)[\n\nGo deeper](#go-deeper)\n\n⌘I\n\nAsk Neatlogs AI\n\nAnswers from the docs\n\nHow can I help?\n\nAsk anything about instrumenting, tracing, or the Neatlogs dashboard.\n\nHow do I instrument my Python app?What is a trace vs a span?How do I trace OpenAI calls?How do I import traces from Langfuse?",
+            "metadata": {
+              "truncated": false
+            },
+            "title": "https://docs.neatlogs.com (text/html; charset=utf-8)",
+            "time": {
+              "start": 1791649368798,
+              "end": 1791649370501
+            }
+          },
+          "id": "prt_1269fca54001nKafJqulybKO1d",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fb1f1001GuDYIyNJe8pNbS"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "1fdcb1a84193b3facaeb87a2da5a8437b2162721",
+          "type": "step-finish",
+          "tokens": {
+            "total": 8633,
+            "input": 89,
+            "output": 76,
+            "reasoning": 20,
+            "cache": {
+              "write": 0,
+              "read": 8448
+            }
+          },
+          "cost": 0,
+          "id": "prt_1269fd212001n5zNVP0E0C3sfn",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fb1f1001GuDYIyNJe8pNbS"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_1269fafdb001qSutedzEGa3DQi",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "/home/hpbenny/patient-zero",
+          "root": "/home/hpbenny/patient-zero"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 9742,
+          "input": 1184,
+          "output": 86,
+          "reasoning": 24,
+          "cache": {
+            "write": 0,
+            "read": 8448
+          }
+        },
+        "modelID": "big-pickle",
+        "providerID": "opencode",
+        "time": {
+          "created": 1791649370789,
+          "completed": 1791649376671
+        },
+        "finish": "tool-calls",
+        "id": "msg_1269fd2a50016v69FkGB4bFXFd",
+        "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp"
+      },
+      "parts": [
+        {
+          "snapshot": "1fdcb1a84193b3facaeb87a2da5a8437b2162721",
+          "type": "step-start",
+          "id": "prt_1269fe38b001D1BDPd6tCrvF1c",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fd2a50016v69FkGB4bFXFd"
+        },
+        {
+          "type": "reasoning",
+          "text": "Let me read heal.py and the SDK reference for neatlogs to find the correct calls for span, flush, shutdown.",
+          "time": {
+            "start": 1791649375149,
+            "end": 1791649375200
+          },
+          "id": "prt_1269fe3ad001AW11Zb0YKvB54Q",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fd2a50016v69FkGB4bFXFd"
+        },
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_00_8d5025np7dnkeexpxqqq4vgf",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/home/hpbenny/patient-zero/heal.py"
+            },
+            "output": "<path>/home/hpbenny/patient-zero/heal.py</path>\n<type>file</type>\n<content>\n1: import json\n2: import os\n3: import re\n4: import subprocess\n5: import sys\n6: import time\n7: from pathlib import Path\n8: \n9: import requests\n10: from dotenv import load_dotenv\n11: \n12: import attack\n13: \n14: load_dotenv()\n15: \n16: NEATLOGS_API_KEY = os.environ[\"NEATLOGS_API_KEY\"]\n17: GEMINI_API_KEY = os.environ[\"GEMINI_API_KEY\"]\n18: \n19: import neatlogs\n20: from opentelemetry.trace import Status, StatusCode\n21: \n22: neatlogs.init(\n23:     api_key=NEATLOGS_API_KEY,\n24:     workflow_name=\"heal\",\n25: )\n26: \n27: from openai import OpenAI\n28: \n29: client = neatlogs.wrap(\n30:     OpenAI(\n31:         api_key=GEMINI_API_KEY,\n32:         base_url=\"https://generativelanguage.googleapis.com/v1beta/openai/\",\n33:     )\n34: )\n35: \n36: ROOT = Path(__file__).resolve().parent\n37: APP_INIT = ROOT / \"app\" / \"__init__.py\"\n38: LOG_PATH = ROOT / \"evidence\" / \"app_run.log\"\n39: VERIFY_LOG_PATH = ROOT / \"evidence\" / \"quarantine_run.log\"\n40: QUARANTINE = ROOT / \"quarantine\" / \"app\" / \"__init__.py\"\n41: LESSONS = ROOT / \"lessons.json\"\n42: ANTIBODY_TEST = ROOT / \"tests\" / \"test_antibody.py\"\n43: ANTIBODY_PAYLOADS = [[1, 2], \"hello\", 123, True]\n44: MODEL = \"gemini-3.8-flash\"\n45: BASE_URL = \"http://localhost:5000\"\n46: HEALTH_URL = f\"{BASE_URL}/health\"\n47: PORT = \"5000\"\n48: VERIFY_BASE_URL = \"http://localhost:5001\"\n49: VERIFY_PORT = \"5001\"\n50: \n51: DIAGNOSE_SYSTEM = (\n52:     \"You are a senior Python engineer. Given a Flask crash traceback and the \"\n53:     \"current source of app/__init__.py, identify the single root cause of the crash \"\n54:     \"and produce a corrected FULL replacement of the file that fixes the crash while \"\n55:     \"preserving all existing behavior and routes. Do not add new dependencies. \"\n56:     \"Respond in EXACTLY this plain-text format, with no other commentary:\\n\"\n57:     \"ROOT CAUSE: <one short paragraph>\\n\"\n58:     \"FILE:\\n\"\n59:     \"```python\\n\"\n60:     \"<complete contents of app/__init__.py>\\n\"\n61:     \"```\"\n62: )\n63: \n64: ANTIBODY_TEMPLATE = '''import pytest\n65: \n66: from app import create_app\n67: \n68: \n69: @pytest.fixture\n70: def client():\n71:     app = create_app()\n72:     app.config[\"TESTING\"] = True\n73:     with app.test_client() as c:\n74:         yield c\n75: \n76: \n77: @pytest.mark.parametrize(\"payload\", {payloads})\n78: def test_rejects_malformed_item(client, payload):\n79:     resp = client.post(\"/items\", json=payload)\n80:     assert resp.status_code == 400\n81: '''\n82: \n83: \n84: def extract_traceback(log_text):\n85:     marker = \"Traceback (most recent call last):\"\n86:     idx = log_text.rfind(marker)\n87:     if idx == -1:\n88:         return log_text.strip()\n89:     return log_text[idx:].strip()\n90: \n91: \n92: def count_crashed(attack_stdout):\n93:     return sum(\n94:         1 for line in attack_stdout.splitlines() if line.rstrip().endswith(\"CRASH\")\n95:     )\n96: \n97: \n98: def parse_diagnosis(text):\n99:     cause_marker = \"ROOT CAUSE:\"\n100:     file_marker = \"FILE:\"\n101:     cause_idx = text.find(cause_marker)\n102:     file_idx = text.find(file_marker)\n103:     if cause_idx == -1 or file_idx == -1 or file_idx < cause_idx:\n104:         raise ValueError(\"response is missing the ROOT CAUSE:/FILE: markers\")\n105:     root_cause = text[cause_idx + len(cause_marker) : file_idx].strip()\n106:     file_text = text[file_idx + len(file_marker) :]\n107:     block = re.search(r\"```(?:python)?\\s*\\n?(.*?)```\", file_text, re.S)\n108:     if not block:\n109:         raise ValueError(\"response is missing the python code block\")\n110:     corrected_file = block.group(1).strip(\"\\n\").rstrip() + \"\\n\"\n111:     if not root_cause or not corrected_file.strip():\n112:         raise ValueError(\"response has an empty root cause or file\")\n113:     return root_cause, corrected_file\n114: \n115: \n116: def wait_for_health(health_url, timeout=20.0):\n117:     deadline = time.time() + timeout\n118:     while time.time() < deadline:\n119:         try:\n120:             resp = requests.get(health_url, timeout=1)\n121:             if resp.status_code == 200:\n122:                 return True\n123:         except requests.RequestException:\n124:             pass\n125:         time.sleep(0.3)\n126:     return False\n127: \n128: \n129: def detect(crashed_count):\n130:     with neatlogs.trace(\"detect\", kind=\"CHAIN\") as span:\n131:         span.set_attribute(\"attacks.crashed\", crashed_count)\n132:         if crashed_count > 0:\n133:             span.set_status(\n134:                 Status(StatusCode.ERROR, f\"{crashed_count} attack(s) returned 5xx\")\n135:             )\n136:         else:\n137:             span.set_status(Status(StatusCode.OK))\n138: \n139: \n140: @neatlogs.span(kind=\"CHAIN\", name=\"diagnose\")\n141: def diagnose(traceback_text, source):\n142:     response = client.chat.completions.create(\n143:         model=MODEL,\n144:         messages=[\n145:             {\"role\": \"system\", \"content\": DIAGNOSE_SYSTEM},\n146:             {\n147:                 \"role\": \"user\",\n148:                 \"content\": (\n149:                     f\"TRACEBACK:\\n{traceback_text}\\n\\n\"\n150:                     f\"CURRENT app/__init__.py:\\n{source}\"\n151:                 ),\n152:             },\n153:         ],\n154:     )\n155:     return response.choices[0].message.content\n156: \n157: \n158: def stop_server(server, log_file):\n159:     server.terminate()\n160:     try:\n161:         server.wait(timeout=10)\n162:     except subprocess.TimeoutExpired:\n163:         server.kill()\n164:         server.wait()\n165:     log_file.close()\n166: \n167: \n168: @neatlogs.span(kind=\"CHAIN\", name=\"quarantine\")\n169: def quarantine(corrected_file):\n170:     QUARANTINE.parent.mkdir(parents=True, exist_ok=True)\n171:     QUARANTINE.write_text(corrected_file, encoding=\"utf-8\")\n172:     return QUARANTINE\n173: \n174: \n175: @neatlogs.span(kind=\"CHAIN\", name=\"verify\")\n176: def verify():\n177:     VERIFY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)\n178:     log_file = open(VERIFY_LOG_PATH, \"w\")\n179:     server = subprocess.Popen(\n180:         [sys.executable, \"-m\", \"flask\", \"--app\", \"app\", \"run\", \"--port\", VERIFY_PORT],\n181:         cwd=QUARANTINE.parent.parent,\n182:         stdout=log_file,\n183:         stderr=subprocess.STDOUT,\n184:     )\n185: \n186:     try:\n187:         if not wait_for_health(f\"{VERIFY_BASE_URL}/health\"):\n188:             return \"quarantined app did not become healthy in time\"\n189: \n190:         attack = subprocess.run(\n191:             [sys.executable, \"attack.py\", VERIFY_BASE_URL],\n192:             cwd=ROOT,\n193:             capture_output=True,\n194:             text=True,\n195:         )\n196:         print(attack.stdout, end=\"\")\n197:         if attack.returncode != 0:\n198:             return \"attack.py still crashes the quarantined app\"\n199:     finally:\n200:         stop_server(server, log_file)\n201: \n202:     tests = subprocess.run(\n203:         [sys.executable, \"-m\", \"pytest\", str(ROOT / \"tests\"), \"-q\", \"-o\", \"pythonpath=\"],\n204:         cwd=QUARANTINE.parent.parent,\n205:         env={**os.environ, \"PYTHONPATH\": str(QUARANTINE.parent.parent)},\n206:         capture_output=True,\n207:         text=True,\n208:     )\n209:     print(tests.stdout, end=\"\")\n210:     if tests.returncode != 0:\n211:         return \"pytest failed on the quarantined app\"\n212: \n213:     return None\n214: \n215: \n216: @neatlogs.span(kind=\"CHAIN\", name=\"promote\")\n217: def promote():\n218:     corrected_file = QUARANTINE.read_text(encoding=\"utf-8\")\n219:     APP_INIT.write_text(corrected_file, encoding=\"utf-8\")\n220:     return APP_INIT\n221: \n222: \n223: def write_antibody_test():\n224:     ANTIBODY_TEST.parent.mkdir(parents=True, exist_ok=True)\n225:     ANTIBODY_TEST.write_text(\n226:         ANTIBODY_TEMPLATE.format(payloads=repr(ANTIBODY_PAYLOADS)),\n227:         encoding=\"utf-8\",\n228:     )\n229:     return ANTIBODY_TEST\n230: \n231: \n232: def uncovered_attacks():\n233:     return [body for body in attack.bodies if body not in ANTIBODY_PAYLOADS]\n234: \n235: \n236: def append_lesson(cause, fix, verified, attacks_not_covered):\n237:     lessons = []\n238:     if LESSONS.exists():\n239:         try:\n240:             loaded = json.loads(LESSONS.read_text(encoding=\"utf-8\"))\n241:             if isinstance(loaded, list):\n242:                 lessons = loaded\n243:         except json.JSONDecodeError:\n244:             lessons = []\n245:     lessons.append(\n246:         {\n247:             \"cause\": cause,\n248:             \"fix\": fix,\n249:             \"verified\": verified,\n250:             \"attacks_not_covered\": attacks_not_covered,\n251:         }\n252:     )\n253:     LESSONS.write_text(json.dumps(lessons, indent=2) + \"\\n\", encoding=\"utf-8\")\n254:     return LESSONS\n255: \n256: \n257: def main():\n258:     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)\n259:     log_file = open(LOG_PATH, \"w\")\n260:     server = subprocess.Popen(\n261:         [sys.executable, \"-m\", \"flask\", \"--app\", \"app\", \"run\", \"--port\", PORT],\n262:         cwd=ROOT,\n263:         stdout=log_file,\n264:         stderr=subprocess.STDOUT,\n265:     )\n266: \n267:     try:\n268:         if not wait_for_health(HEALTH_URL):\n269:             print(\"Flask app did not become healthy in time.\")\n270:             return 2\n271: \n272:         attack = subprocess.run(\n273:             [sys.executable, \"attack.py\", BASE_URL],\n274:             cwd=ROOT,\n275:             capture_output=True,\n276:             text=True,\n277:         )\n278:         print(attack.stdout, end=\"\")\n279: \n280:         crashed_count = count_crashed(attack.stdout)\n281: \n282:         if attack.returncode != 1:\n283:             print(f\"attack.py exited {attack.returncode}; no crash detected.\")\n284:             return 0\n285: \n286:         log_file.flush()\n287:         log_text = LOG_PATH.read_text(encoding=\"utf-8\", errors=\"replace\")\n288:         traceback_text = extract_traceback(log_text)\n289:         source = APP_INIT.read_text(encoding=\"utf-8\")\n290: \n291:         detect(crashed_count)\n292: \n293:         root_cause = None\n294:         corrected_file = None\n295:         raw = \"\"\n296:         for attempt in range(3):\n297:             raw = diagnose(traceback_text, source)\n298:             try:\n299:                 root_cause, corrected_file = parse_diagnosis(raw)\n300:                 break\n301:             except ValueError as exc:\n302:                 print(f\"Diagnosis parse failed (attempt {attempt + 1}/3): {exc}\")\n303:         else:\n304:             print(\"Diagnosis parsing failed after 3 attempts. Raw response:\")\n305:             print(raw)\n306:             return 1\n307: \n308:         print(\"\\n=== DIAGNOSIS ===\")\n309:         print(f\"Root cause: {root_cause}\")\n310:         print(\"\\nProposed app/__init__.py:\\n\")\n311:         print(corrected_file)\n312: \n313:         quarantine(corrected_file)\n314:         print(f\"\\nSaved proposal to {QUARANTINE.relative_to(ROOT)}\")\n315: \n316:         reason = verify()\n317:         if reason is not None:\n318:             print(f\"Rejected: {reason}\")\n319:             return 1\n320: \n321:         promote()\n322:         print(f\"Promoted fix to {APP_INIT.relative_to(ROOT)}\")\n323: \n324:         write_antibody_test()\n325:         print(f\"Wrote antibody test to {ANTIBODY_TEST.relative_to(ROOT)}\")\n326: \n327:         append_lesson(root_cause, corrected_file, True, uncovered_attacks())\n328:         print(f\"Appended lesson to {LESSONS.relative_to(ROOT)}\")\n329:         return 0\n330:     finally:\n331:         stop_server(server, log_file)\n332:         neatlogs.flush()\n333:         neatlogs.shutdown()\n334: \n335: \n336: if __name__ == \"__main__\":\n337:     sys.exit(main())\n\n(End of file - total 337 lines)\n</content>",
+            "metadata": {
+              "preview": "import json\nimport os\nimport re\nimport subprocess\nimport sys\nimport time\nfrom pathlib import Path\n\nimport requests\nfrom dotenv import load_dotenv\n\nimport attack\n\nload_dotenv()\n\nNEATLOGS_API_KEY = os.environ[\"NEATLOGS_API_KEY\"]\nGEMINI_API_KEY = os.environ[\"GEMINI_API_KEY\"]\n\nimport neatlogs\nfrom opentelemetry.trace import Status, StatusCode",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/home/hpbenny/patient-zero/heal.py",
+                "text": "import json\nimport os\nimport re\nimport subprocess\nimport sys\nimport time\nfrom pathlib import Path\n\nimport requests\nfrom dotenv import load_dotenv\n\nimport attack\n\nload_dotenv()\n\nNEATLOGS_API_KEY = os.environ[\"NEATLOGS_API_KEY\"]\nGEMINI_API_KEY = os.environ[\"GEMINI_API_KEY\"]\n\nimport neatlogs\nfrom opentelemetry.trace import Status, StatusCode\n\nneatlogs.init(\n    api_key=NEATLOGS_API_KEY,\n    workflow_name=\"heal\",\n)\n\nfrom openai import OpenAI\n\nclient = neatlogs.wrap(\n    OpenAI(\n        api_key=GEMINI_API_KEY,\n        base_url=\"https://generativelanguage.googleapis.com/v1beta/openai/\",\n    )\n)\n\nROOT = Path(__file__).resolve().parent\nAPP_INIT = ROOT / \"app\" / \"__init__.py\"\nLOG_PATH = ROOT / \"evidence\" / \"app_run.log\"\nVERIFY_LOG_PATH = ROOT / \"evidence\" / \"quarantine_run.log\"\nQUARANTINE = ROOT / \"quarantine\" / \"app\" / \"__init__.py\"\nLESSONS = ROOT / \"lessons.json\"\nANTIBODY_TEST = ROOT / \"tests\" / \"test_antibody.py\"\nANTIBODY_PAYLOADS = [[1, 2], \"hello\", 123, True]\nMODEL = \"gemini-3.8-flash\"\nBASE_URL = \"http://localhost:5000\"\nHEALTH_URL = f\"{BASE_URL}/health\"\nPORT = \"5000\"\nVERIFY_BASE_URL = \"http://localhost:5001\"\nVERIFY_PORT = \"5001\"\n\nDIAGNOSE_SYSTEM = (\n    \"You are a senior Python engineer. Given a Flask crash traceback and the \"\n    \"current source of app/__init__.py, identify the single root cause of the crash \"\n    \"and produce a corrected FULL replacement of the file that fixes the crash while \"\n    \"preserving all existing behavior and routes. Do not add new dependencies. \"\n    \"Respond in EXACTLY this plain-text format, with no other commentary:\\n\"\n    \"ROOT CAUSE: <one short paragraph>\\n\"\n    \"FILE:\\n\"\n    \"```python\\n\"\n    \"<complete contents of app/__init__.py>\\n\"\n    \"```\"\n)\n\nANTIBODY_TEMPLATE = '''import pytest\n\nfrom app import create_app\n\n\n@pytest.fixture\ndef client():\n    app = create_app()\n    app.config[\"TESTING\"] = True\n    with app.test_client() as c:\n        yield c\n\n\n@pytest.mark.parametrize(\"payload\", {payloads})\ndef test_rejects_malformed_item(client, payload):\n    resp = client.post(\"/items\", json=payload)\n    assert resp.status_code == 400\n'''\n\n\ndef extract_traceback(log_text):\n    marker = \"Traceback (most recent call last):\"\n    idx = log_text.rfind(marker)\n    if idx == -1:\n        return log_text.strip()\n    return log_text[idx:].strip()\n\n\ndef count_crashed(attack_stdout):\n    return sum(\n        1 for line in attack_stdout.splitlines() if line.rstrip().endswith(\"CRASH\")\n    )\n\n\ndef parse_diagnosis(text):\n    cause_marker = \"ROOT CAUSE:\"\n    file_marker = \"FILE:\"\n    cause_idx = text.find(cause_marker)\n    file_idx = text.find(file_marker)\n    if cause_idx == -1 or file_idx == -1 or file_idx < cause_idx:\n        raise ValueError(\"response is missing the ROOT CAUSE:/FILE: markers\")\n    root_cause = text[cause_idx + len(cause_marker) : file_idx].strip()\n    file_text = text[file_idx + len(file_marker) :]\n    block = re.search(r\"```(?:python)?\\s*\\n?(.*?)```\", file_text, re.S)\n    if not block:\n        raise ValueError(\"response is missing the python code block\")\n    corrected_file = block.group(1).strip(\"\\n\").rstrip() + \"\\n\"\n    if not root_cause or not corrected_file.strip():\n        raise ValueError(\"response has an empty root cause or file\")\n    return root_cause, corrected_file\n\n\ndef wait_for_health(health_url, timeout=20.0):\n    deadline = time.time() + timeout\n    while time.time() < deadline:\n        try:\n            resp = requests.get(health_url, timeout=1)\n            if resp.status_code == 200:\n                return True\n        except requests.RequestException:\n            pass\n        time.sleep(0.3)\n    return False\n\n\ndef detect(crashed_count):\n    with neatlogs.trace(\"detect\", kind=\"CHAIN\") as span:\n        span.set_attribute(\"attacks.crashed\", crashed_count)\n        if crashed_count > 0:\n            span.set_status(\n                Status(StatusCode.ERROR, f\"{crashed_count} attack(s) returned 5xx\")\n            )\n        else:\n            span.set_status(Status(StatusCode.OK))\n\n\n@neatlogs.span(kind=\"CHAIN\", name=\"diagnose\")\ndef diagnose(traceback_text, source):\n    response = client.chat.completions.create(\n        model=MODEL,\n        messages=[\n            {\"role\": \"system\", \"content\": DIAGNOSE_SYSTEM},\n            {\n                \"role\": \"user\",\n                \"content\": (\n                    f\"TRACEBACK:\\n{traceback_text}\\n\\n\"\n                    f\"CURRENT app/__init__.py:\\n{source}\"\n                ),\n            },\n        ],\n    )\n    return response.choices[0].message.content\n\n\ndef stop_server(server, log_file):\n    server.terminate()\n    try:\n        server.wait(timeout=10)\n    except subprocess.TimeoutExpired:\n        server.kill()\n        server.wait()\n    log_file.close()\n\n\n@neatlogs.span(kind=\"CHAIN\", name=\"quarantine\")\ndef quarantine(corrected_file):\n    QUARANTINE.parent.mkdir(parents=True, exist_ok=True)\n    QUARANTINE.write_text(corrected_file, encoding=\"utf-8\")\n    return QUARANTINE\n\n\n@neatlogs.span(kind=\"CHAIN\", name=\"verify\")\ndef verify():\n    VERIFY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)\n    log_file = open(VERIFY_LOG_PATH, \"w\")\n    server = subprocess.Popen(\n        [sys.executable, \"-m\", \"flask\", \"--app\", \"app\", \"run\", \"--port\", VERIFY_PORT],\n        cwd=QUARANTINE.parent.parent,\n        stdout=log_file,\n        stderr=subprocess.STDOUT,\n    )\n\n    try:\n        if not wait_for_health(f\"{VERIFY_BASE_URL}/health\"):\n            return \"quarantined app did not become healthy in time\"\n\n        attack = subprocess.run(\n            [sys.executable, \"attack.py\", VERIFY_BASE_URL],\n            cwd=ROOT,\n            capture_output=True,\n            text=True,\n        )\n        print(attack.stdout, end=\"\")\n        if attack.returncode != 0:\n            return \"attack.py still crashes the quarantined app\"\n    finally:\n        stop_server(server, log_file)\n\n    tests = subprocess.run(\n        [sys.executable, \"-m\", \"pytest\", str(ROOT / \"tests\"), \"-q\", \"-o\", \"pythonpath=\"],\n        cwd=QUARANTINE.parent.parent,\n        env={**os.environ, \"PYTHONPATH\": str(QUARANTINE.parent.parent)},\n        capture_output=True,\n        text=True,\n    )\n    print(tests.stdout, end=\"\")\n    if tests.returncode != 0:\n        return \"pytest failed on the quarantined app\"\n\n    return None\n\n\n@neatlogs.span(kind=\"CHAIN\", name=\"promote\")\ndef promote():\n    corrected_file = QUARANTINE.read_text(encoding=\"utf-8\")\n    APP_INIT.write_text(corrected_file, encoding=\"utf-8\")\n    return APP_INIT\n\n\ndef write_antibody_test():\n    ANTIBODY_TEST.parent.mkdir(parents=True, exist_ok=True)\n    ANTIBODY_TEST.write_text(\n        ANTIBODY_TEMPLATE.format(payloads=repr(ANTIBODY_PAYLOADS)),\n        encoding=\"utf-8\",\n    )\n    return ANTIBODY_TEST\n\n\ndef uncovered_attacks():\n    return [body for body in attack.bodies if body not in ANTIBODY_PAYLOADS]\n\n\ndef append_lesson(cause, fix, verified, attacks_not_covered):\n    lessons = []\n    if LESSONS.exists():\n        try:\n            loaded = json.loads(LESSONS.read_text(encoding=\"utf-8\"))\n            if isinstance(loaded, list):\n                lessons = loaded\n        except json.JSONDecodeError:\n            lessons = []\n    lessons.append(\n        {\n            \"cause\": cause,\n            \"fix\": fix,\n            \"verified\": verified,\n            \"attacks_not_covered\": attacks_not_covered,\n        }\n    )\n    LESSONS.write_text(json.dumps(lessons, indent=2) + \"\\n\", encoding=\"utf-8\")\n    return LESSONS\n\n\ndef main():\n    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)\n    log_file = open(LOG_PATH, \"w\")\n    server = subprocess.Popen(\n        [sys.executable, \"-m\", \"flask\", \"--app\", \"app\", \"run\", \"--port\", PORT],\n        cwd=ROOT,\n        stdout=log_file,\n        stderr=subprocess.STDOUT,\n    )\n\n    try:\n        if not wait_for_health(HEALTH_URL):\n            print(\"Flask app did not become healthy in time.\")\n            return 2\n\n        attack = subprocess.run(\n            [sys.executable, \"attack.py\", BASE_URL],\n            cwd=ROOT,\n            capture_output=True,\n            text=True,\n        )\n        print(attack.stdout, end=\"\")\n\n        crashed_count = count_crashed(attack.stdout)\n\n        if attack.returncode != 1:\n            print(f\"attack.py exited {attack.returncode}; no crash detected.\")\n            return 0\n\n        log_file.flush()\n        log_text = LOG_PATH.read_text(encoding=\"utf-8\", errors=\"replace\")\n        traceback_text = extract_traceback(log_text)\n        source = APP_INIT.read_text(encoding=\"utf-8\")\n\n        detect(crashed_count)\n\n        root_cause = None\n        corrected_file = None\n        raw = \"\"\n        for attempt in range(3):\n            raw = diagnose(traceback_text, source)\n            try:\n                root_cause, corrected_file = parse_diagnosis(raw)\n                break\n            except ValueError as exc:\n                print(f\"Diagnosis parse failed (attempt {attempt + 1}/3): {exc}\")\n        else:\n            print(\"Diagnosis parsing failed after 3 attempts. Raw response:\")\n            print(raw)\n            return 1\n\n        print(\"\\n=== DIAGNOSIS ===\")\n        print(f\"Root cause: {root_cause}\")\n        print(\"\\nProposed app/__init__.py:\\n\")\n        print(corrected_file)\n\n        quarantine(corrected_file)\n        print(f\"\\nSaved proposal to {QUARANTINE.relative_to(ROOT)}\")\n\n        reason = verify()\n        if reason is not None:\n            print(f\"Rejected: {reason}\")\n            return 1\n\n        promote()\n        print(f\"Promoted fix to {APP_INIT.relative_to(ROOT)}\")\n\n        write_antibody_test()\n        print(f\"Wrote antibody test to {ANTIBODY_TEST.relative_to(ROOT)}\")\n\n        append_lesson(root_cause, corrected_file, True, uncovered_attacks())\n        print(f\"Appended lesson to {LESSONS.relative_to(ROOT)}\")\n        return 0\n    finally:\n        stop_server(server, log_file)\n        neatlogs.flush()\n        neatlogs.shutdown()\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())",
+                "lineStart": 1,
+                "lineEnd": 337,
+                "totalLines": 337,
+                "truncated": false
+              }
+            },
+            "title": "heal.py",
+            "time": {
+              "start": 1791649375540,
+              "end": 1791649375637
+            }
+          },
+          "id": "prt_1269fe3fc001Lvdzg5p920SArf",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fd2a50016v69FkGB4bFXFd"
+        },
+        {
+          "type": "tool",
+          "tool": "webfetch",
+          "callID": "call_01_t9vdw9mhbdidft922uy60mi4",
+          "state": {
+            "status": "completed",
+            "input": {
+              "url": "https://docs.neatlogs.com/sdk"
+            },
+            "output": "SDK Overview\n\n![](/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Fai-search-bg.167zcr41zs-bg.webp&w=3840&q=75&dpl=dpl_B2uAofKk9gXnXPvCU2YXdvhyh2RA)\n\n[![Neatlogs](/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flogo.0052vjd_bglpj.webp&w=256&q=75&dpl=dpl_B2uAofKk9gXnXPvCU2YXdvhyh2RA)docs](/docs)\n\nSearch\n\n⌘K\n\n[](https://github.com/NeatLogs/neatlogs)\n\n[Documentation](/docs)[Ask AI](/ask)[Guides](/guides)[SDK Reference](/sdk)[Integrations](/integrations)[Public API](/api-reference)[CLI](/cli)\n\nSDK Reference\n\n[SDK Overview](/sdk)\n\nSDKs\n\n[Python SDK](/sdk/python)[TypeScript SDK](/sdk/typescript)[Go SDK](/sdk/go)[SDK Doctor](/sdk/doctor)[Browser SDK](/sdk/browser)[HTTP Trace Injection](/sdk/http-injection)[OpenTelemetry (OTLP)](/sdk/opentelemetry)[Distributed Tracing](/sdk/distributed-tracing)\n\nConfiguration\n\n[Sessions](/sdk/sessions)[Tags](/sdk/tags)[Workflow Name](/sdk/workflow-name)[Multiple Workflows in One Codebase](/sdk/multiple-workflows)[Secondary Clients](/sdk/secondary-clients)[Flush and Shutdown](/sdk/lifecycle)[Custom Attributes](/sdk/custom-attributes)[Prompt Templates and Managed Prompts](/sdk/prompt-templates)[PII Redaction](/sdk/pii-redaction)[End-User Identity](/sdk/end-user-identity)\n\nConcepts\n\n[Span Kinds](/sdk/span-kinds)[Python Auto-Instrumentation](/sdk/supported-libraries)\n\n[](https://github.com/NeatLogs/neatlogs)\n\nSDK Overview\n\n# SDK Overview\n\nCopy PageCopied!\n\nPick your platform and instrument your application in minutes.\n\nThe Neatlogs SDKs capture traces, spans, token usage, and logs from your LLM application. Initialize the SDK, then use the integration mechanism documented for your library: an explicit wrapper, callback handler, processor, hook, plugin, or (where Python documents it) an auto-instrumentation key.\n\n## [Pick your SDK](#pick-your-sdk)\n\n[\n\n### Python\n\nThe primary SDK — auto-instrumentation, @span decorator, trace(), log capture, and the full init() reference.\n\n](/sdk/python)[\n\n### TypeScript / Node.js\n\nInstrument Node.js backends and scripts with explicit wrappers, handlers, processors, hooks, and plugins.\n\n](/sdk/typescript)[\n\n### Go\n\nInstrument Go LLM apps — wrap a Google Gemini client or open spans explicitly, on an isolated private OpenTelemetry provider.\n\n](/sdk/go)[\n\n### Browser\n\nCapture traces from browser applications.\n\n](/sdk/browser)\n\nNote\n\nWorking without an SDK? Send traces directly over HTTP — see the [HTTP API reference](/sdk/http-injection) — or point any OpenTelemetry exporter at Neatlogs over [OTLP](/sdk/opentelemetry).\n\n## [Configuration](#configuration)\n\n[\n\n### Sessions\n\nGroup related traces into user or conversation sessions.\n\n](/sdk/sessions)[\n\n### Tags\n\nLabel traces for filtering and analytics.\n\n](/sdk/tags)[\n\n### Workflow Name\n\nName your pipelines for cleaner dashboards.\n\n](/sdk/workflow-name)[\n\n### Multiple Workflows\n\nOne process, many features — each its own distinct workflow.\n\n](/sdk/multiple-workflows)[\n\n### Custom Attributes\n\nAttach business context to spans and traces.\n\n](/sdk/custom-attributes)[\n\n### Prompt Templates\n\nTrack prompt template versions across traces.\n\n](/sdk/prompt-templates)[\n\n### PII Redaction\n\nScrub sensitive data before it leaves your app.\n\n](/sdk/pii-redaction)[\n\n### Flush and Shutdown\n\nDrain telemetry safely in scripts, servers, workers, streams, and tests.\n\n](/sdk/lifecycle)\n\n## [Concepts](#concepts)\n\n[\n\n### Span Kinds\n\nThe span taxonomy: LLM, tool, agent, retrieval, and more.\n\n](/sdk/span-kinds)\n\n[\n\nPython SDK\n\nInstall, initialize, and instrument Python LLM and agent apps with Neatlogs.\n\n](/sdk/python)\n\n### On this page\n\n[\n\nPick your SDK](#pick-your-sdk)[\n\nConfiguration](#configuration)[\n\nConcepts](#concepts)\n\n⌘I\n\nAsk Neatlogs AI\n\nAnswers from the docs\n\nHow can I help?\n\nAsk anything about instrumenting, tracing, or the Neatlogs dashboard.\n\nHow do I instrument my Python app?What is a trace vs a span?How do I trace OpenAI calls?How do I import traces from Langfuse?",
+            "metadata": {
+              "truncated": false
+            },
+            "title": "https://docs.neatlogs.com/sdk (text/html; charset=utf-8)",
+            "time": {
+              "start": 1791649375610,
+              "end": 1791649376319
+            }
+          },
+          "id": "prt_1269fe53b001JrCB4L3QH253kg",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fd2a50016v69FkGB4bFXFd"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "1fdcb1a84193b3facaeb87a2da5a8437b2162721",
+          "type": "step-finish",
+          "tokens": {
+            "total": 9742,
+            "input": 1184,
+            "output": 86,
+            "reasoning": 24,
+            "cache": {
+              "write": 0,
+              "read": 8448
+            }
+          },
+          "cost": 0,
+          "id": "prt_1269fe8d0001wNv27InXpb2uO3",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fd2a50016v69FkGB4bFXFd"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_1269fafdb001qSutedzEGa3DQi",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "/home/hpbenny/patient-zero",
+          "root": "/home/hpbenny/patient-zero"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 14423,
+          "input": 4642,
+          "output": 88,
+          "reasoning": 93,
+          "cache": {
+            "write": 0,
+            "read": 9600
+          }
+        },
+        "modelID": "big-pickle",
+        "providerID": "opencode",
+        "time": {
+          "created": 1791649376686,
+          "completed": 1791649381246
+        },
+        "finish": "tool-calls",
+        "id": "msg_1269fe9ae001Jvw2u2o7L5viRi",
+        "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp"
+      },
+      "parts": [
+        {
+          "snapshot": "1fdcb1a84193b3facaeb87a2da5a8437b2162721",
+          "type": "step-start",
+          "id": "prt_1269ff30e001svZZgO9yd0TYWq",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fe9ae001Jvw2u2o7L5viRi"
+        },
+        {
+          "type": "reasoning",
+          "text": "Let me check the lifecycle docs and the python SDK docs to get the correct span/root span usage. Need to know how to create a root span named \"patient-zero-heal\". The existing code uses `neatlogs.trace(\"detect\", kind=\"CHAIN\")` as a context manager. For a root span, probably `@neatlogs.span` or `neatlogs.trace`. Let me fetch the lifecycle and python docs.",
+          "time": {
+            "start": 1791649379127,
+            "end": 1791649379723
+          },
+          "id": "prt_1269ff336001rVsUh14LmFlPLZ",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fe9ae001Jvw2u2o7L5viRi"
+        },
+        {
+          "type": "tool",
+          "tool": "webfetch",
+          "callID": "call_00_bak7xm9yo92kqoxp5ijzh1fe",
+          "state": {
+            "status": "completed",
+            "input": {
+              "url": "https://docs.neatlogs.com/sdk/lifecycle"
+            },
+            "output": "Flush and Shutdown\n\n![](/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Fai-search-bg.167zcr41zs-bg.webp&w=3840&q=75&dpl=dpl_B2uAofKk9gXnXPvCU2YXdvhyh2RA)\n\n[![Neatlogs](/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flogo.0052vjd_bglpj.webp&w=256&q=75&dpl=dpl_B2uAofKk9gXnXPvCU2YXdvhyh2RA)docs](/docs)\n\nSearch\n\n⌘K\n\n[](https://github.com/NeatLogs/neatlogs)\n\n[Documentation](/docs)[Ask AI](/ask)[Guides](/guides)[SDK Reference](/sdk)[Integrations](/integrations)[Public API](/api-reference)[CLI](/cli)\n\nSDK Reference\n\n[SDK Overview](/sdk)\n\nSDKs\n\n[Python SDK](/sdk/python)[TypeScript SDK](/sdk/typescript)[Go SDK](/sdk/go)[SDK Doctor](/sdk/doctor)[Browser SDK](/sdk/browser)[HTTP Trace Injection](/sdk/http-injection)[OpenTelemetry (OTLP)](/sdk/opentelemetry)[Distributed Tracing](/sdk/distributed-tracing)\n\nConfiguration\n\n[Sessions](/sdk/sessions)[Tags](/sdk/tags)[Workflow Name](/sdk/workflow-name)[Multiple Workflows in One Codebase](/sdk/multiple-workflows)[Secondary Clients](/sdk/secondary-clients)[Flush and Shutdown](/sdk/lifecycle)[Custom Attributes](/sdk/custom-attributes)[Prompt Templates and Managed Prompts](/sdk/prompt-templates)[PII Redaction](/sdk/pii-redaction)[End-User Identity](/sdk/end-user-identity)\n\nConcepts\n\n[Span Kinds](/sdk/span-kinds)[Python Auto-Instrumentation](/sdk/supported-libraries)\n\n[](https://github.com/NeatLogs/neatlogs)\n\nFlush and Shutdown\n\n# Flush and Shutdown\n\nCopy PageCopied!\n\nDrain buffered telemetry safely in scripts, servers, workers, streams, and tests.\n\nNeatlogs batches telemetry outside your application's request path. Ending a process does not guarantee that its final batch was sent. A **flush** waits for buffered logs and spans to be handed to the exporter; **shutdown** drains the SDK and closes SDK-owned resources.\n\n## [Which call to use](#which-call-to-use)\n\nRuntime\n\nRequired lifecycle\n\nScript or CLI\n\nFlush, then shut down in `finally`/`defer` before exiting.\n\nLong-running server\n\nDo not flush per request. Shut down once from the server's graceful-termination hook.\n\nReused serverless instance\n\nAwait a bounded flush at the end of each invocation. Do not shut down after every invocation if the runtime may reuse the process.\n\nQueue worker\n\nStop accepting work, await active jobs and streams, then shut down once.\n\nStreaming call\n\nConsume, cancel, or close the stream first; then flush. Otherwise the span may still be active and contain only partial output.\n\nTest process\n\nFlush before assertions that depend on exported data; shut down in suite teardown so no background work leaks into another test.\n\nUse a deadline appropriate to your host. If the deadline expires, treat the result as possible telemetry loss; do not hold process termination indefinitely.\n\n## [Python](#python)\n\n```\ntry:\n    run_application()\nfinally:\n    neatlogs.flush(timeout_millis=10_000)\n    neatlogs.shutdown(timeout_millis=10_000)\n```\n\n`neatlogs.flush_all()` drains every live Neatlogs client in the process, including secondary `Client` instances. It is scoped to Neatlogs-owned clients and does not flush a foreign or process-global OpenTelemetry provider. Use an individual client's `flush()` when you only want that client's pipeline.\n\n## [TypeScript](#typescript)\n\n```\ntry {\n  await runApplication();\n} finally {\n  await flush();\n  await shutdown();\n}\n```\n\n`flushAll()` drains all registered Neatlogs clients. It does not flush or shut down a foreign/global tracer provider. `shutdown()` resets the default client so a later explicit `init()` can create a new SDK generation.\n\nWhen an integration returns an `AsyncIterable`, `ReadableStream`, or other lazy stream, await its completion or cancellation before this block. Starting a stream without consuming it does not produce a completed response.\n\n## [Go](#go)\n\n```\nshutdown, err := neatlogs.Init(ctx, cfg)\nif err != nil {\n    return err\n}\ndefer func() {\n    shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)\n    defer cancel()\n    _ = shutdown(shutdownCtx)\n}()\n```\n\n`neatlogs.Flush(ctx)` drains the default provider without closing it. A secondary `Client` has its own `Flush(ctx)` and `Shutdown(ctx)`. Go intentionally has no process-wide `FlushAll`: clients are explicit and their lifecycles remain independent.\n\n[\n\nSecondary Clients\n\nSend some traces to a different Neatlogs project entirely, from the same process — without a second init().\n\n](/sdk/secondary-clients)[\n\nCustom Attributes\n\nneatlogs.\\* attributes for TOOL, RETRIEVER, RERANKER, GUARDRAIL, and VECTOR\\_STORE spans.\n\n](/sdk/custom-attributes)\n\n### On this page\n\n[\n\nWhich call to use](#which-call-to-use)[\n\nPython](#python)[\n\nTypeScript](#typescript)[\n\nGo](#go)\n\n⌘I\n\nAsk Neatlogs AI\n\nAnswers from the docs\n\nHow can I help?\n\nAsk anything about instrumenting, tracing, or the Neatlogs dashboard.\n\nHow do I instrument my Python app?What is a trace vs a span?How do I trace OpenAI calls?How do I import traces from Langfuse?",
+            "metadata": {
+              "truncated": false
+            },
+            "title": "https://docs.neatlogs.com/sdk/lifecycle (text/html; charset=utf-8)",
+            "time": {
+              "start": 1791649379807,
+              "end": 1791649380528
+            }
+          },
+          "id": "prt_1269ff5a2001JLvfFH1PK0nTJh",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fe9ae001Jvw2u2o7L5viRi"
+        },
+        {
+          "type": "tool",
+          "tool": "webfetch",
+          "callID": "call_01_wupuwbb3g3cprdem1fdndta8",
+          "state": {
+            "status": "completed",
+            "input": {
+              "url": "https://docs.neatlogs.com/sdk/python"
+            },
+            "output": "Python SDK\n\n![](/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Fai-search-bg.167zcr41zs-bg.webp&w=3840&q=75&dpl=dpl_B2uAofKk9gXnXPvCU2YXdvhyh2RA)\n\n[![Neatlogs](/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flogo.0052vjd_bglpj.webp&w=256&q=75&dpl=dpl_B2uAofKk9gXnXPvCU2YXdvhyh2RA)docs](/docs)\n\nSearch\n\n⌘K\n\n[](https://github.com/NeatLogs/neatlogs)\n\n[Documentation](/docs)[Ask AI](/ask)[Guides](/guides)[SDK Reference](/sdk)[Integrations](/integrations)[Public API](/api-reference)[CLI](/cli)\n\nSDK Reference\n\n[SDK Overview](/sdk)\n\nSDKs\n\n[Python SDK](/sdk/python)[TypeScript SDK](/sdk/typescript)[Go SDK](/sdk/go)[SDK Doctor](/sdk/doctor)[Browser SDK](/sdk/browser)[HTTP Trace Injection](/sdk/http-injection)[OpenTelemetry (OTLP)](/sdk/opentelemetry)[Distributed Tracing](/sdk/distributed-tracing)\n\nConfiguration\n\n[Sessions](/sdk/sessions)[Tags](/sdk/tags)[Workflow Name](/sdk/workflow-name)[Multiple Workflows in One Codebase](/sdk/multiple-workflows)[Secondary Clients](/sdk/secondary-clients)[Flush and Shutdown](/sdk/lifecycle)[Custom Attributes](/sdk/custom-attributes)[Prompt Templates and Managed Prompts](/sdk/prompt-templates)[PII Redaction](/sdk/pii-redaction)[End-User Identity](/sdk/end-user-identity)\n\nConcepts\n\n[Span Kinds](/sdk/span-kinds)[Python Auto-Instrumentation](/sdk/supported-libraries)\n\n[](https://github.com/NeatLogs/neatlogs)\n\nPython SDK\n\n# Python SDK\n\nCopy PageCopied!\n\nInstall, initialize, and instrument Python LLM and agent apps with Neatlogs.\n\nThe Python SDK installs from PyPI as `neatlogs`. Use the latest published stable release. Wrap the AI clients you already use, add spans to your own functions, and track prompt templates — every call is captured as a trace in your dashboard. This page covers everything from install to the full `init()` reference; use the contents on the right to jump around.\n\nNote\n\nNew to tracing? A **trace** is the record of one run of your app; a **span** is one step inside it (an LLM call, a tool call). You **instrument** once, then read traces in the dashboard. See [Introduction](/docs/quickstart/introduction).\n\n## [Install](#install)\n\npip\n\npoetry\n\nuv\n\n```\npip install -U neatlogs\n```\n\nTo auto-instrument a specific library, install its extra (same `-U` rule applies):\n\n```\npip install -U \"neatlogs[openai]\"      # OpenAI\npip install -U \"neatlogs[anthropic]\"   # Anthropic\npip install -U \"neatlogs[langchain]\"   # LangChain / LangGraph\npip install -U neatlogs                # CrewAI (instrument with neatlogs.wrap(crew))\n```\n\nRequires Python ≥ 3.10, < 3.14. See [Supported Libraries](#supported-libraries) for every key.\n\n## [Check the installed SDK with Doctor](#check-the-installed-sdk-with-doctor)\n\nFrom the application root, run the network-free check before changing instrumentation:\n\n```\npython -m neatlogs doctor --local --json\n```\n\nAfter instrumenting and running your normal checks, set the project key through your environment or secret manager and run the authenticated probe separately:\n\n```\npython -m neatlogs doctor --probe --json\n```\n\nUse the active project interpreter; do not download or invoke a different Doctor binary. Require Doctor v2 format, Python runtime, and schema `2`. If the installed package lacks that capability, check PyPI for the latest published stable release and ask before upgrading. Accept newer compatible releases and never downgrade one. A local pass validates controlled in-process capture only. A probe pass additionally proves exact finalized readback of its own four-span trace, but neither replaces testing your real workflow. See [SDK Doctor](/sdk/doctor) for the full pass criteria, reason codes, and safe troubleshooting steps.\n\n## [Your first trace](#your-first-trace)\n\nCall `neatlogs.init()` once, then wrap your AI client with `neatlogs.wrap(...)`. From then on every call that client makes is recorded — you use the client exactly as before.\n\nNote\n\n**EU projects:** add `endpoint=\"https://eu.ingest.neatlogs.com\"` to `neatlogs.init(...)`. Use the base URL, without `/v1/traces`.\n\n```\nneatlogs.init(\n    api_key=os.environ[\"NEATLOGS_API_KEY\"],\n    endpoint=\"https://eu.ingest.neatlogs.com\",\n    workflow_name=\"my-first-app\",\n)\n```\n\nOpenAI\n\nAnthropic\n\nGoogle Gemini\n\n```\nimport os\nimport neatlogs\n\nneatlogs.init(api_key=os.environ[\"NEATLOGS_API_KEY\"], workflow_name=\"my-first-app\")\n\nfrom openai import OpenAI\n\nclient = neatlogs.wrap(OpenAI())\n\nresponse = client.chat.completions.create(\n    model=\"gpt-4o\",\n    messages=[{\"role\": \"user\", \"content\": \"What is the capital of France?\"}],\n)\nprint(response.choices[0].message.content)\n\nneatlogs.flush()\nneatlogs.shutdown()\n```\n\nRun the script — a trace appears in your dashboard under `my-first-app` within a few seconds. The parentless `LLM` span is a valid trace root and shows the prompt, response, token counts, latency, and model name. No blank `WORKFLOW` wrapper is added. Standalone non-root operations such as `TOOL` receive one automatic workflow parent.\n\nNote\n\n`neatlogs.wrap()` auto-detects the client type and works for OpenAI, Anthropic, Google GenAI, Azure OpenAI, Bedrock, Vertex AI, OpenRouter, and agent frameworks like CrewAI, Pydantic AI, DSPy, Agno, Google ADK. You can wrap the client wherever you build it — order doesn't matter. See [Integrations](/integrations) for every supported client, with runnable examples.\n\nExtra keyword arguments to `wrap()` are stamped on the resulting trace root as `neatlogs.workflow.<key>` attributes, so they show in the metadata drawer and are searchable:\n\n```\nclient = neatlogs.wrap(OpenAI(), project_id=\"p_123\", route=\"/api/chat\", surface=\"copilot\")\n```\n\nSession and end-user identity are the exception — those go through `neatlogs.identify(...)`, not `wrap()` kwargs. See [Sessions](/sdk/sessions).\n\n## [flush() and shutdown()](#flush-and-shutdown)\n\nThe SDK batches spans and exports them in the background every few seconds. A short-lived script can exit before that fires, losing spans — so `neatlogs.flush()` forces an immediate export and `neatlogs.shutdown()` stops the background thread cleanly.\n\n```\nneatlogs.flush()\nneatlogs.shutdown()\n```\n\nAlways call both at the end of **scripts and CLI tools**. In **long-running servers** (FastAPI, Flask, …) the background thread exports continuously, so don't flush per request — call `flush()` + `shutdown()` **once at server shutdown** (for example, in a FastAPI lifespan handler). Reused serverless handlers should flush each invocation without shutting down a warm process. See [Flush and Shutdown](/sdk/lifecycle) for workers, streams, tests, secondary clients, and bounded teardown.\n\n## [Auto-instrumentation](#auto-instrumentation)\n\nInstead of `wrap()`, you can patch a library by name with `instrumentations=[...]` in `init()`. This works for providers that create clients internally.\n\n```\nneatlogs.init(\n    api_key=os.environ[\"NEATLOGS_API_KEY\"],\n    workflow_name=\"my-app\",\n    instrumentations=[\"openai\"],\n)\n```\n\nFor **LangChain / LangGraph**, use the callback handler — it's the only supported path, and works identically across Python and TypeScript. `instrumentations=[\"langchain\"]` has no self-rooting (confirmed root cause of production trace loss) and is not offered as an alternative:\n\n```\nneatlogs.init(api_key=os.environ[\"NEATLOGS_API_KEY\"], workflow_name=\"my-app\")\n\nfrom langchain_openai import ChatOpenAI\n\nhandler = neatlogs.langchain_handler()\nllm = ChatOpenAI(model=\"gpt-4o\")\nresult = llm.invoke(\"Hello\", config={\"callbacks\": [handler]})\n```\n\nSee [LangChain](/integrations/langchain) for the full picture, including the LangGraph-specific attachment rule (graph invocation, not per-node).\n\nWarning\n\n**The one rule for `instrumentations=[...]`:** call `neatlogs.init()` **before** you import that library — auto-instrumentation patches it at init time, so a library imported first is missed. (`neatlogs.wrap()` has no such rule; it patches the specific client object you hand it.) If you use `load_dotenv()`, call it before `init()`. Google GenAI is stricter still: construct `genai.Client()` *after* `init()`.\n\n`init()` creates an SDK-private tracer provider and never installs it as the process-global provider. Call it once per active SDK generation; after `shutdown()` you may explicitly initialize a new generation.\n\n## [Instrument your own code with @span](#instrument-your-own-code-with-span)\n\n`wrap()` and auto-instrumentation only see library calls. To make **your own functions** (custom agents, pipelines, tools) appear as steps, put `@neatlogs.span(...)` on the line directly above the function.\n\n```\nimport neatlogs\n\n@neatlogs.span(kind=\"WORKFLOW\")\ndef handle_request(user_input: str) -> str:\n    return support_agent(user_input)\n\n@neatlogs.span(kind=\"AGENT\", name=\"support_agent\")\ndef support_agent(message: str) -> str:\n    ...\n\n@neatlogs.span(kind=\"TOOL\", tool_name=\"get_order_status\")\ndef get_order_status(order_id: str) -> dict:\n    return orders_db.get(order_id)\n```\n\nWorks on sync and async functions. The decorator captures the arguments as `input.value` and the return value as `output.value`.\n\nNote\n\n**Grouping calls into one trace.** A single `wrap()`\\-ed call renders on its own — `wrap()` opens a `WORKFLOW` root automatically. But each call with no surrounding context becomes its *own* trace, so when a run makes several calls (or mixes provider calls with your own functions), decorate the entry point with `@neatlogs.span(kind=\"WORKFLOW\")` (or `AGENT`/`CHAIN`). That function becomes the single root and everything nests under it; the automatic root steps aside.\n\n### [The WORKFLOW root](#the-workflow-root)\n\nA `WORKFLOW` span is the entry point of a trace — the outermost function you call to process one request or task. Decorating it makes that function the trace's single, meaningfully-named root, and everything it calls (your own `@span` functions, wrapped provider calls, auto-instrumented libraries) nests underneath in the order it ran:\n\n```\n@neatlogs.span(kind=\"WORKFLOW\")\ndef handle_customer_request(message: str) -> str:\n    intent = classify_intent(message)\n    if intent == \"order_status\":\n        return check_order_agent(message)\n    return general_support_agent(message)\n```\n\nIf you don't add one, Neatlogs opens a `WORKFLOW` root automatically so a lone instrumented call still renders cleanly. Decorate your own entry point when you want the root to carry a specific name and group several steps under it.\n\n> Running several independent features in one process (a copilot, a summarizer, a background job)? Give each its own named `WORKFLOW` root at its entry point so they appear as distinct workflows in the dashboard — see [Multiple Workflows in One Codebase](/sdk/multiple-workflows).\n\n### [A complete multi-span example](#a-complete-multi-span-example)\n\n```\nimport os\nimport json\nimport neatlogs\n\nneatlogs.init(\n    api_key=os.environ[\"NEATLOGS_API_KEY\"],\n    workflow_name=\"support-bot\",\n)\n\nfrom openai import OpenAI\n\nclient = neatlogs.wrap(OpenAI())\n\n@neatlogs.span(kind=\"TOOL\", tool_name=\"get_order_status\")\ndef get_order_status(order_id: str) -> dict:\n    return {\"order_id\": order_id, \"status\": \"shipped\", \"eta\": \"2025-01-20\"}\n\n@neatlogs.span(kind=\"AGENT\", name=\"support_agent\")\ndef support_agent(message: str) -> str:\n    response = client.chat.completions.create(\n        model=\"gpt-4o\",\n        messages=[\n            {\"role\": \"system\", \"content\": \"You are a support agent.\"},\n            {\"role\": \"user\", \"content\": message},\n        ],\n        tools=[{\n            \"type\": \"function\",\n            \"function\": {\n                \"name\": \"get_order_status\",\n                \"description\": \"Get the status of an order\",\n                \"parameters\": {\"type\": \"object\", \"properties\": {\"order_id\": {\"type\": \"string\"}}},\n            }\n        }],\n    )\n    msg = response.choices[0].message\n    if msg.tool_calls:\n        args = json.loads(msg.tool_calls[0].function.arguments)\n        return str(get_order_status(**args))\n    return msg.content\n\n@neatlogs.span(kind=\"WORKFLOW\")\ndef handle_request(user_input: str) -> str:\n    return support_agent(user_input)\n\nhandle_request(\"Where is my order #12345?\")\n\nneatlogs.flush()\nneatlogs.shutdown()\n```\n\nThe nesting reflects the actual call hierarchy at runtime — each decorated function appears exactly where it ran, with its inputs, outputs, and timing:\n\n```\nWORKFLOW  handle_request           0.8s\n  AGENT   support_agent            0.8s\n    LLM   gpt-4o                   0.6s\n    TOOL  get_order_status         0.0s\n```\n\n### [Decorator ordering](#decorator-ordering)\n\nWhen you stack `@neatlogs.span` with a framework decorator that **transforms** the function (`@function_tool`, `@tool`, `@task`), put `@neatlogs.span` **below** it — closest to `def` — so it wraps the real function:\n\n```\n# CORRECT — @function_tool wraps the span-decorated function\n@function_tool\n@neatlogs.span(kind=\"TOOL\", tool_name=\"search\")\ndef search(query: str) -> str:\n    ...\n```\n\nDecorators that preserve the callable (`@app.get`, `@app.post`) can sit either side.\n\n### [@span parameters](#span-parameters)\n\nParameter\n\nKind\n\nDescription\n\n`kind`\n\nAll\n\n**Required.** The span kind (see [Span kinds](#span-kinds)).\n\n`name`\n\nAll\n\nThe span's **label** in the tree. Defaults to the function name.\n\n`role`\n\n`AGENT`\n\nThe agent's role (also sets `agent.name`).\n\n`goal`\n\n`AGENT`\n\nThe agent's objective.\n\n`tool_name`\n\n`TOOL`, `MCP_TOOL`\n\nThe **tool identifier** (sets `tool.name`). Distinct from `name`: `name` is the label, `tool_name` is what the dashboard groups/reports on.\n\n`parameters`\n\n`TOOL`\n\nTool parameter schema (dict).\n\n`description`\n\n`TOOL`, `MCP_TOOL`\n\nHuman-readable tool description.\n\n`capture_input`\n\nAll\n\nRecord the arguments (default `True`).\n\n`capture_output`\n\nAll\n\nRecord the return value (default `True`).\n\n`mask`\n\nAll\n\n`(span_dict) -> span_dict`, applied before export for this span.\n\nTo omit content for one span, pass `capture_input=False` and/or `capture_output=False`. To redact or transform captured telemetry for the whole client, use `mask`; there is no global trace-content switch. See [PII Redaction](/sdk/pii-redaction).\n\n## [Span kinds](#span-kinds)\n\n`@neatlogs.span()` accepts these eight kinds:\n\nKind\n\nUse for\n\n`WORKFLOW`\n\nTop-level entry point — one per trace root\n\n`AGENT`\n\nA reasoning step that calls an LLM and decides what to do next\n\n`CHAIN`\n\nA fixed sequence of steps with no branching LLM decisions\n\n`TOOL`\n\nA function the agent calls to interact with the world\n\n`RETRIEVER`\n\nA vector search or document lookup (custom retrievers)\n\n`EMBEDDING`\n\nA function that produces embeddings\n\n`GUARDRAIL`\n\nA safety or validation check\n\n`MCP_TOOL`\n\nA tool exposed over the Model Context Protocol\n\nPassing any other kind raises `ValueError`. The kinds `RERANKER` and `VECTOR_STORE` are created with `trace()` (below); `LLM` comes from `wrap()` / auto-instrumentation. For the complete catalogue of every kind, see [Span Kinds](/sdk/span-kinds).\n\n## [Inline spans with trace()](#inline-spans-with-trace)\n\n`with neatlogs.trace(...)` opens a span for a block **inside** a function — use it for prompt-template tracking (below), for custom span kinds (`RERANKER`, `VECTOR_STORE`), or to set attributes yourself on custom retrieval/guardrail logic that Neatlogs doesn't already recognize.\n\n```\nwith neatlogs.trace(\n    name,\n    kind=None,\n    system_prompt_template=None,\n    user_prompt_template=None,\n    version=None,\n    mask=None,\n) as span:\n    ...\n```\n\nSupported libraries (vector DBs, framework retrievers) are captured automatically — you only set attributes for **custom** implementations:\n\n```\nimport json\nimport neatlogs\n\n@neatlogs.span(kind=\"CHAIN\")\ndef rag_pipeline(query: str) -> str:\n    with neatlogs.trace(\"retrieve\", kind=\"RETRIEVER\") as span:\n        span.set_attribute(\"neatlogs.retriever.query\", query)\n        docs = my_custom_search(query, k=5)   # not a supported library\n        span.set_attribute(\"neatlogs.retriever.documents\", json.dumps(docs))\n    return generate(query, docs)\n```\n\nThe `neatlogs.*` attribute names each custom kind expects (`RETRIEVER`, `RERANKER`, `VECTOR_STORE`, `GUARDRAIL`, `EMBEDDING`, `TOOL`) are listed in [Custom Attributes](/sdk/custom-attributes).\n\n## [Prompt templates](#prompt-templates)\n\nCapture both the template structure and the runtime variable values for an LLM call, linked to its span. `SystemPromptTemplate` is the system/instruction prompt; `UserPromptTemplate` is the user turn. Pass them to `trace(kind=\"LLM\", ...)` around the call:\n\n```\nimport neatlogs\nfrom neatlogs import SystemPromptTemplate, UserPromptTemplate\n\nsystem_template = SystemPromptTemplate([\n    {\"role\": \"system\", \"content\": \"You are a {{role}} assistant.\"},\n])\nuser_template = UserPromptTemplate([\n    {\"role\": \"user\", \"content\": \"{{question}}\"},\n])\n\n@neatlogs.span(kind=\"AGENT\")\ndef answer_agent(question: str) -> str:\n    with neatlogs.trace(\"answer\", kind=\"LLM\",\n                        system_prompt_template=system_template,\n                        user_prompt_template=user_template):\n        msgs = system_template.compile(role=\"support\") + user_template.compile(question=question)\n        return client.chat.completions.create(model=\"gpt-4o\", messages=msgs).choices[0].message.content\n```\n\nFor prompts managed centrally in the dashboard, the module-level functions (`neatlogs.get_prompt`, `create_prompt`, `update_prompt`, …) are available after `init()`. See [Prompt Templates](/sdk/prompt-templates) for managed prompts and the full API.\n\nNote\n\n`PromptTemplate` and the `prompt_template=` keyword are backward-compatible aliases for `SystemPromptTemplate` / `system_prompt_template=`. New code should use the canonical names.\n\n## [Log capture](#log-capture)\n\nLog capture is **opt-in** — pass `capture_logs=True` to `init()`. Neatlogs then records logs as `LOG` spans (children of the active span) so they appear inline in the trace timeline. Without it, none of the three mechanisms below capture anything.\n\n```\nneatlogs.init(api_key=\"...\", capture_logs=True)\n\n@neatlogs.span(kind=\"CHAIN\")\ndef rag_pipeline(query: str) -> str:\n    docs = retrieve(query)\n    neatlogs.log(\"retrieved {count} docs\", count=len(docs))\n    return generate(query, docs)\n```\n\n### [1\\. `neatlogs.log()` — structured template messages](#1-neatlogslog--structured-template-messages)\n\nThe primary way to emit a named, structured step. The **message template** becomes the span name (low-cardinality, searchable) and each keyword argument is stored as a `log.{key}` attribute.\n\n```\nneatlogs.log(msg_template, /, level=\"info\", **data)\n```\n\nParameter\n\nDescription\n\n`msg_template`\n\nMessage template with `{key}` placeholders. Stored as the span name.\n\n`level`\n\nLog level: `\"info\"`, `\"debug\"`, `\"warning\"`, `\"error\"`. Default: `\"info\"`.\n\n`**data`\n\nKey-value pairs rendered into the template and stored as `log.{key}` attributes.\n\nTemplates use Python's `str.format_map()` syntax — single braces `{count}`, not `{{count}}`. `neatlogs.log()` must be called **inside an active span** (`@neatlogs.span` or `with neatlogs.trace()`); calls outside a traced block are dropped.\n\n```\nneatlogs.log(\"retrieved {count} docs, top score {score:.2f}\",\n             count=len(docs), score=docs[0][\"score\"])\n```\n\nWhen `init(debug=True)`, every `neatlogs.log()` call is also echoed to `stderr` immediately, so you can watch steps in the terminal without opening the dashboard:\n\n```\n[neatlogs] 12:34:56  LOG  retrieved 42 docs, top score 0.94  count=42  score=0.94\n```\n\n### [2\\. stdlib `logging.*()` — auto-captured](#2-stdlib-logging--auto-captured)\n\nAny `logging.debug()` / `info()` / `warning()` / `error()` call inside a traced block is captured automatically — no code changes. All levels are captured by default; raise the floor with `log_level=\"WARNING\"` in `init()` to capture only `WARNING` and above.\n\n### [3\\. `capture_stdout=True` — print capture](#3-capture_stdouttrue--print-capture)\n\nPass `capture_stdout=True` to `@neatlogs.span` or `with neatlogs.trace()` to capture every `print()` line inside that block as a LOG span. Output is still mirrored to the real stdout — capture does not suppress terminal output.\n\n```\n@neatlogs.span(kind=\"AGENT\", capture_stdout=True)\ndef run_agent(query: str) -> str:\n    print(f\"Processing query: {query}\")   # captured as a LOG span\n    return agent.invoke(query)\n```\n\n### [What you'll see in the dashboard](#what-youll-see-in-the-dashboard)\n\nEach log call produces a `LOG` span as a child of the active span, with these fields:\n\nField\n\nSource\n\n**Span name**\n\n`neatlogs.log()`: the message template. stdlib/print: the rendered message.\n\n`input.value`\n\nThe fully rendered log message.\n\n`log.level`\n\n`info`, `warning`, `error`, etc.\n\n`log.{key}`\n\nEach kwarg from `neatlogs.log()`, e.g. `log.count`, `log.score`.\n\n## [Framework & provider helpers](#framework--provider-helpers)\n\nBeyond `instrumentations=[...]`, a few helpers attach tracing to a specific object:\n\n-   **`neatlogs.wrap(client)`** — the main path; wraps an LLM client or agent (OpenAI, Anthropic, Bedrock, Vertex, OpenRouter, CrewAI, Pydantic AI, DSPy, Agno, Google ADK, Hermes).\n-   **`neatlogs.langchain_handler()`** — a LangChain callback handler to pass in `config={\"callbacks\": [...]}`.\n-   **`neatlogs.openai_agents_processor()`** — a trace processor for the OpenAI Agents SDK.\n-   **`neatlogs.strands_hooks(agent)`** — registers hooks on a Strands agent.\n-   **`neatlogs.bind_templates(...)` / `register_crewai_task(...)`** — attach prompt templates to CrewAI work.\n\nEach provider and framework has a runnable example in [Integrations](/integrations).\n\n## [Cross-process propagation](#cross-process-propagation)\n\nTo keep **one logical trace** across a service boundary, carry the active span as W3C `traceparent`/`tracestate` headers: the caller injects, the callee extracts. Both helpers use Neatlogs' **private** propagator — they never read or replace the global OTel propagator, so this stays isolated from a co-tenant tracer.\n\n```\nimport neatlogs\n\n# Caller — inject before sending. Returns False (carrier untouched) if no span is active.\nwith neatlogs.trace(\"caller\"):\n    headers = {\"content-type\": \"application/json\"}\n    if neatlogs.inject_trace_context(headers):\n        requests.post(url, headers=headers, json=payload)\n\n# Callee — extract to continue the trace. Re-bind identity here (it does NOT ride the wire).\nwith neatlogs.extract_trace_context(\n    req.headers,\n    session_id=sid,\n    parent_session_id=parent_sid,\n    session_custom_fields={\"feature_name\": feature, \"entry_point\": \"api\"},\n    end_user_id=uid,\n):\n    with neatlogs.trace(\"do_work\"):   # joins the caller's trace as a child\n        ...\n```\n\nUse these instead of a bare `opentelemetry.propagate.inject(...)`, which reads the global propagator and writes nothing under isolation. For the full cross-language walkthrough — including a Go or TypeScript peer — see [Distributed Tracing](/sdk/distributed-tracing).\n\n## [Supported libraries](#supported-libraries)\n\nPass these to `instrumentations=[]` (install the matching extra first).\n\n**LLM providers:** `openai`, `anthropic`, `google_genai`, `azure_ai_inference`, `bedrock`, `litellm`, `cohere`, `groq`, `mistralai`, `together`, `ollama`, `replicate`, `openrouter`\n\n**Agent frameworks:** `crewai`, `openai_agents`, `pydantic_ai`, `dspy`, `agno`, `google_adk`, `strands`, `autogen`, `haystack`, `smolagents`, `hermes`\n\n**Vector databases:** `chromadb`, `pinecone`, `qdrant`, `weaviate`, `milvus`, `elasticsearch`\n\n**Other:** `mcp`, `instructor`, `guardrails`\n\nWarning\n\n**LangChain / LangGraph are not in this list on purpose.** `instrumentations=[\"langchain\"]` has no self-rooting and is not offered — use `neatlogs.langchain_handler()` instead (see [LangChain](/integrations/langchain)). Every other agent framework above self-roots via `instrumentations=[...]` alone.\n\nNote\n\nFor CrewAI, `instrumentations=[\"crewai\"]` installs class-level hooks on `Crew.kickoff`, `Task`, `Agent`, `BaseTool.run` and `LLM.call`, so a bare crew gets a full tree with no provider key and no `wrap()`. Use `neatlogs.wrap(...)` on top when you want to bind workflow metadata, or when you run a **Flow** or a **standalone Agent** — those are routed per instance and aren't covered by the key alone.\n\nThe install commands, minimum package versions, and important compatibility limits are maintained in the [tested support table](/sdk/supported-libraries). Documentation checks verify that every advertised integration names its actual activation mechanism; a registry key alone is not treated as proof that a provider works.\n\n## [init() reference](#init-reference)\n\nParameter\n\nType\n\nDefault\n\nDescription\n\n`api_key`\n\n`str`\n\n`NEATLOGS_API_KEY` env\n\nProject API key. If unset, spans are created but not exported.\n\n`endpoint`\n\n`str`\n\n`https://ingest.neatlogs.com`\n\nBackend base URL; set to `https://eu.ingest.neatlogs.com` for EU projects. Trace export is normalized to `{base_url}/v1/traces`.\n\n`workflow_name`\n\n`str`\n\nscript filename\n\nLabel all traces from this process appear under.\n\n`instrumentations`\n\n`list[str]`\n\n—\n\nLibraries to auto-instrument.\n\n`tags`\n\n`list[str]`\n\n—\n\nTags attached to every trace.\n\n`user_id`\n\n`str`\n\n—\n\nOperator/service identity (a developer, a service account, a CI job). Propagates to all spans as `user.id`. Distinct from the end-user — see [End-User Identity](/sdk/end-user-identity).\n\n`capture_logs`\n\n`bool`\n\n`False`\n\nCapture `neatlogs.log()`, stdlib logging, and `print()` as LOG spans.\n\n`log_level`\n\n`str`\n\n`\"INFO\"`\n\nMinimum stdlib log level to capture.\n\n`sample_rate`\n\n`float`\n\n`1.0`\n\nFraction of traces to export.\n\n`flush_interval`\n\n`float`\n\n`5.0`\n\nSeconds between background batch flushes. Lower it for short-lived workers that can't wait; raise it to batch more aggressively.\n\n`batch_size`\n\n`int`\n\n`100`\n\nMax spans per export request.\n\n`mask`\n\n`callable`\n\n—\n\nClient-side telemetry transform. Sync and awaitable callbacks run at the exporter boundary; callback error, timeout, cancellation, or an invalid return drops the item. For compatibility, `None` means “export the mutated clone.”\n\n`pii_enabled`\n\n`bool`\n\nproject setting\n\nOverride server-side PII redaction. Persisted — the dashboard reflects what you pass.\n\n`pii_entities`\n\n`list[str]`\n\nproject setting\n\nWhich server-side entity categories to redact, e.g. `[\"PERSON\", \"EMAIL_ADDRESS\"]`. Persisted. Must be a non-empty list of non-blank strings or `init()` raises `ValueError`; omit it to keep the saved selection.\n\n`pii_span_types`\n\n`list[str]`\n\nproject setting\n\nLimit redaction to specific span kinds. Persisted.\n\n`debug`\n\n`bool`\n\n`False`\n\nVerbose logging to stderr.\n\n`isolate`\n\n`bool`\n\n—\n\nDeprecated compatibility option. Neatlogs is always isolated; this option cannot opt into the global provider.\n\n`tracer_provider`\n\n`TracerProvider`\n\n—\n\nA private provider you created (but did **not** install as the OTel global). Neatlogs configures and flushes it but does not register it globally or shut it down.\n\n`register_shutdown_handlers`\n\n`bool`\n\n`True`\n\nRegister bounded signal handling. Set `False` only when the host owns signal handling and calls `shutdown()` itself.\n\n`uploads_enabled`\n\n`bool`\n\n`False`\n\nEnable authenticated typed-media and oversized-OTLP uploads; can also be enabled with `NEATLOGS_UPLOADS_ENABLED`.\n\n`flush_all()` drains the default pipeline and every live secondary Neatlogs client without touching foreign/global providers. For lifecycle guidance see [Flush and Shutdown](/sdk/lifecycle). For PII redaction details see [PII Redaction](/sdk/pii-redaction); to group multi-turn conversations see [Sessions](/sdk/sessions); to attach your app's users to traces see [End-User Identity](/sdk/end-user-identity).\n\nBuilding in Node.js? See the [TypeScript SDK](/sdk/typescript).\n\n[\n\nSDK Overview\n\nPick your platform and instrument your application in minutes.\n\n](/sdk)[\n\nTypeScript SDK\n\nInstall, initialize, and instrument TypeScript/Node.js LLM and agent apps with Neatlogs.\n\n](/sdk/typescript)\n\n### On this page\n\n[\n\nInstall](#install)[\n\nCheck the installed SDK with Doctor](#check-the-installed-sdk-with-doctor)[\n\nYour first trace](#your-first-trace)[\n\nflush() and shutdown()](#flush-and-shutdown)[\n\nAuto-instrumentation](#auto-instrumentation)[\n\nInstrument your own code with @span](#instrument-your-own-code-with-span)[\n\nThe WORKFLOW root](#the-workflow-root)[\n\nA complete multi-span example](#a-complete-multi-span-example)[\n\nDecorator ordering](#decorator-ordering)[\n\n@span parameters](#span-parameters)[\n\nSpan kinds](#span-kinds)[\n\nInline spans with trace()](#inline-spans-with-trace)[\n\nPrompt templates](#prompt-templates)[\n\nLog capture](#log-capture)[\n\n1\\. `neatlogs.log()` — structured template messages](#1-neatlogslog--structured-template-messages)[\n\n2\\. stdlib `logging.*()` — auto-captured](#2-stdlib-logging--auto-captured)[\n\n3\\. `capture_stdout=True` — print capture](#3-capture_stdouttrue--print-capture)[\n\nWhat you'll see in the dashboard](#what-youll-see-in-the-dashboard)[\n\nFramework & provider helpers](#framework--provider-helpers)[\n\nCross-process propagation](#cross-process-propagation)[\n\nSupported libraries](#supported-libraries)[\n\ninit() reference](#init-reference)\n\n⌘I\n\nAsk Neatlogs AI\n\nAnswers from the docs\n\nHow can I help?\n\nAsk anything about instrumenting, tracing, or the Neatlogs dashboard.\n\nHow do I instrument my Python app?What is a trace vs a span?How do I trace OpenAI calls?How do I import traces from Langfuse?",
+            "metadata": {
+              "truncated": false
+            },
+            "title": "https://docs.neatlogs.com/sdk/python (text/html; charset=utf-8)",
+            "time": {
+              "start": 1791649379872,
+              "end": 1791649381001
+            }
+          },
+          "id": "prt_1269ff5eb0010It3g0KN2VIHBW",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fe9ae001Jvw2u2o7L5viRi"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "1fdcb1a84193b3facaeb87a2da5a8437b2162721",
+          "type": "step-finish",
+          "tokens": {
+            "total": 14423,
+            "input": 4642,
+            "output": 88,
+            "reasoning": 93,
+            "cache": {
+              "write": 0,
+              "read": 9600
+            }
+          },
+          "cost": 0,
+          "id": "prt_1269ffaec001NbBg7kJDloJmIy",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269fe9ae001Jvw2u2o7L5viRi"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_1269fafdb001qSutedzEGa3DQi",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "/home/hpbenny/patient-zero",
+          "root": "/home/hpbenny/patient-zero"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 26944,
+          "input": 9090,
+          "output": 340,
+          "reasoning": 3306,
+          "cache": {
+            "write": 0,
+            "read": 14208
+          }
+        },
+        "modelID": "big-pickle",
+        "providerID": "opencode",
+        "time": {
+          "created": 1791649381264,
+          "completed": 1791649407815
+        },
+        "finish": "tool-calls",
+        "id": "msg_1269ffb90001m6RJBlNYtNDWiC",
+        "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp"
+      },
+      "parts": [
+        {
+          "snapshot": "1fdcb1a84193b3facaeb87a2da5a8437b2162721",
+          "type": "step-start",
+          "id": "prt_126a004a70012n1Qe29RdejS2O",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269ffb90001m6RJBlNYtNDWiC"
+        },
+        {
+          "type": "reasoning",
+          "text": "Now I understand. The user wants to wrap main() in a single root neatlogs span named \"patient-zero-heal\" with try/finally. The finally calls flush() and shutdown() before any sys.exit.\n\nCurrently main() has a try/finally that already calls flush and shutdown. The user wants a root span wrapping main(). Let me think about what the correct implementation is.\n\nOptions:\n1. Create a wrapper function decorated with `@neatlogs.span(kind=\"WORKFLOW\", name=\"patient-zero-heal\")` that calls main().\n2. Inside main(), use `with neatlogs.trace(\"patient-zero-heal\", kind=\"WORKFLOW\") as span:` wrapping the body.\n\nThe request: \"wrap main() in one root neatlogs span named 'patient-zero-heal' with try/finally, calling neatlogs.flush() and neatlogs.shutdown() in the finally block before any sys.exit, so traces finalize.\"\n\nSo one root span. The try/finally should include flush and shutdown before any sys.exit. Currently sys.exit(main()) is in the `if __name__` block, and main has sys.exit? No, main returns values. sys.exit is called at line 337.\n\nThe cleanest: wrap the `sys.exit(main())` call in a try/finally? Or wrap main's body in a trace span while keeping existing try/finally.\n\nThe phrase \"wrap main() in one root neatlogs span\" suggests the root span should encompass main()'s execution. \"with try/finally, calling neatlogs.flush() and neatlogs.shutdown() in the finally block before any sys.exit\".\n\nCurrently the finally in main already has flush/shutdown, but stop_server happens first. The user says \"before any sys.exit, so traces finalize\". \n\nI think the best approach is to modify the `if __name__ == \"__main__\":` block to wrap main in a span and finally flush/shutdown. But then the inner finally in main also calls flush/shutdown. Hmm.\n\nLet me think what the user precisely wants: \"In heal.py, wrap main() in one root neatlogs span named 'patient-zero-heal' with try/finally, calling neatlogs.flush() and neatlogs.shutdown() in the finally block before any sys.exit\".\n\nSo a root span. The natural implementation:\n\n```python\n@neatlogs.span(kind=\"WORKFLOW\", name=\"patient-zero-heal\")\ndef heal():\n    return main()\n\n\nif __name__ == \"__main__\":\n    try:\n        code = heal()\n    finally:\n        neatlogs.flush()\n        neatlogs.shutdown()\n    sys.exit(code)\n```\n\nBut that adds a wrapper function. Alternatively use `with neatlogs.trace(...)`:\n\n```python\nif __name__ == \"__main__\":\n    with neatlogs.trace(\"patient-zero-heal\", kind=\"WORKFLOW\"):\n        try:\n            sys.exit(main())\n        finally:\n            neatlogs.flush()\n            neatlogs.shutdown()\n```\n\nWait but sys.exit raises SystemExit inside the with block; finally runs, then SystemExit propagates, exiting with span finalized. The with block's __exit__ runs before SystemExit propagates because finally is inside the with. Actually order: with statement enters, try body calls sys.exit -> raises SystemExit, finally runs (flush+shutdown), re-raises SystemExit, then with __exit__ runs, then propagates. So span finalizes after flush/shutdown. Hmm, that means the span end happens after flush, so the root span might not be exported. That's bad.\n\nBetter to keep flush/shutdown outside the span so span closes first. But the user explicitly says \"calling neatlogs.flush() and neatlogs.shutdown() in the finally block before any sys.exit\". \n\nHmm, but there's already try/finally in main() that calls flush/shutdown. The user says \"Change nothing else.\" So maybe the minimal change is to just wrap main() at the call site in a root span, and move flush/shutdown to the finally around the root span before sys.exit.\n\nActually re-reading: \"wrap main() in one root neatlogs span named 'patient-zero-heal' with try/finally, calling neatlogs.flush() and neatlogs.shutdown() in the finally block before any sys.exit, so traces finalize.\"\n\nThe key concern: traces finalize. The root span must end before flush. So the proper structure is:\n\n```python\ndef main():\n    with neatlogs.trace(\"patient-zero-heal\", kind=\"WORKFLOW\"):\n        ...body...\n\nif __name__ == \"__main__\":\n    try:\n        sys.exit(main())\n    finally:\n        neatlogs.flush()\n        neatlogs.shutdown()\n```\n\nBut \"Change nothing else\" constrains us. Hmm. Actually main already has a try/finally with flush/shutdown. If we wrap main's body in a trace via `with`, we can't trivially because the try/finally is the body.\n\nLet me think about the cleanest minimal change that satisfies: one root span named \"patient-zero-heal\", try/finally, flush and shutdown in finally before sys.exit.\n\nI think the intended structure is to add a new function decorated with @neatlogs.span and change the entrypoint. Let me reconsider \"Change nothing else\" — it means don't change other logic, just add the span wrapper and lifecycle.\n\nGiven ambiguity, I should ask? The instructions say ask when ambiguous. But the task is fairly specific. Let me consider the best implementation.\n\nActually, I think the cleanest and most idiomatic per docs is to decorate main with the span? But main has return statements; a decorator would handle it fine. However main's existing finally already calls flush/shutdown. If we decorate main with @neatlogs.span, the span closes after main returns (when the decorator's wrapper completes), and the inner finally flush/shutdown runs before the span closes — meaning the root span isn't included in the flush. Also shutdown during span close could be problematic.\n\nSo we should restructure: remove flush/shutdown from main's finally? But \"Change nothing else\". Hmm.\n\nLet me re-read carefully: \"wrap main() in one root neatlogs span named 'patient-zero-heal' with try/finally, calling neatlogs.flush() and neatlogs.shutdown() in the finally block before any sys.exit, so traces finalize.\"\n\nI think the intended final code is exactly:\n\n```python\ndef main():\n    with neatlogs.trace(\"patient-zero-heal\", kind=\"WORKFLOW\"):\n        ... existing body ...\n\nif __name__ == \"__main__\":\n    try:\n        sys.exit(main())\n    finally:\n        neatlogs.flush()\n        neatlogs.shutdown()\n```\n\nAnd remove the flush/shutdown from main's finally (keeping stop_server). That satisfies \"calling flush/shutdown in the finally block before any sys.exit\". The \"finally block\" is the new one at the entrypoint. Traces finalize because span context exits before flush.\n\nBut \"Change nothing else\" — moving flush/shutdown is part of this change, arguably. The user might want to keep the existing finally too? Having two flushes/shutdowns would be wrong.\n\nHmm, actually there's a subtlety. \"before any sys.exit\" strongly implies there are potential sys.exit calls. The only sys.exit is at line 337. So wrapping at the entrypoint.\n\nWait — could there be sys.exit inside main? No. So \"any sys.exit\" refers to the final one.\n\nI think the safest interpretation that keeps everything working: Wrap the body of main() in `with neatlogs.trace(...)` — but the existing try/finally would remain inside. Then modify the entrypoint to have try/finally flush/shutdown, and remove from main's finally. This is the cleanest.\n\nBut \"Change nothing else\" - hmm. Let me consider that maybe they want a decorator on a wrapper. Let me think about what's minimal without touching main's body: add a wrapper function and change entrypoint, leaving main's flush/shutdown in place? Then flush/shutdown happens inside main before wrapper span closes -> root span lost. Bad.\n\nGiven the explicit \"so traces finalize\" requirement, we need span to close before flush. So flush/shutdown must be outside the span. Thus main's finally flush/shutdown must move out.\n\nI'll go with indenting main's body under a `with neatlogs.trace(\"patient-zero-heal\", kind=\"WORKFLOW\"):` and move the flush/shutdown to a new try/finally at the entrypoint. But wait, if I add `with` around the body and keep main's try/finally for stop_server, then the entrypoint flush/shutdown after main returns. Structure:\n\n```python\ndef main():\n    with neatlogs.trace(\"patient-zero-heal\", kind=\"WORKFLOW\") as span:\n        LOG_PATH.parent.mkdir(...)\n        log_file = open(...)\n        server = Popen(...)\n        try:\n            ...\n            return 0\n        finally:\n            stop_server(server, log_file)\n\n\nif __name__ == \"__main__\":\n    try:\n        sys.exit(main())\n    finally:\n        neatlogs.flush()\n        neatlogs.shutdown()\n```\n\nThis is a big re-indent of main's body though. That's a lot of changes, conflicts with \"Change nothing else\" maybe. But it's necessary to wrap.\n\nAlternatively use decorator on main itself but keep flush/shutdown at entrypoint:\n\n```python\n@neatlogs.span(kind=\"WORKFLOW\", name=\"patient-zero-heal\")\ndef main():\n    LOG_PATH.parent.mkdir(...)\n    ...\n    try:\n        ...\n    finally:\n        stop_server(server, log_file)\n\n\nif __name__ == \"__main__\":\n    try:\n        sys.exit(main())\n    finally:\n        neatlogs.flush()\n        neatlogs.shutdown()\n```\n\nThis is minimal - just remove flush/shutdown from main's finally (2 lines), add decorator (1 line), and wrap entrypoint. The decorator closes the span when main returns, then flush/shutdown at entrypoint. \n\nBut `@neatlogs.span` captures args and output. main takes no args. Return value captured as output.value = 0/1/2. That's fine. The span will be the WORKFLOW root named \"patient-zero-heal\". \n\nBut there's an issue: `neatlogs.span` decorator on main — main is defined at module level and decorated at import time. `neatlogs.init()` is called at line 22 before main is defined, and `neatlogs.wrap` etc. Actually the decorator is applied when the module is loaded, after init() has run (init at line 22, main defined at 257). So that's fine.\n\nHowever, note `@neatlogs.span` returns a wrapper; then `sys.exit(main())` — fine.\n\nWhich is better: decorator or with-block? The user says \"wrap main() in one root neatlogs span named 'patient-zero-heal' with try/finally, calling flush/shutdown in the finally block\". The \"with try/finally\" likely refers to the whole wrapper structure. Decorator + entrypoint try/finally fits.\n\nHmm, but wait—the phrase \"with try/finally, calling neatlogs.flush() and neatlogs.shutdown() in the finally block before any sys.exit\" — the finally block is the try/finally. If we use decorator on main, the finally is at entrypoint. Good.\n\nActually, let me reconsider. Perhaps the simplest and most literal: keep main as is but remove its flush/shutdown? No.\n\nLet me consider that the existing main finally already calls flush/shutdown. If I wrap main() with a decorator and leave the existing flush/shutdown, the span is created by the decorator and ends AFTER the inner finally's shutdown. That means shutdown happens while root span still open → root span may be lost. The user explicitly says \"so traces finalize\" implying fixing this. So we must move them out.\n\nI'll implement:\n\n1. Add `@neatlogs.span(kind=\"WORKFLOW\", name=\"patient-zero-heal\")` above `def main():`.\n2. Remove `neatlogs.flush()` and `neatlogs.shutdown()` from main's finally (keep stop_server).\n3. Change the entrypoint to:\n```python\nif __name__ == \"__main__\":\n    try:\n        sys.exit(main())\n    finally:\n        neatlogs.flush()\n        neatlogs.shutdown()\n```\n\nWait, but there's a subtlety: `sys.exit(main())` in a try, the SystemExit propagates, finally runs flush/shutdown, then exits. Span already closed by decorator since main returned. \n\nBut hold on: does the decorator preserve `sys.exit`? main returns int, decorator returns value, then sys.exit. Fine.\n\nLet me double check `@neatlogs.span` accepts kind=\"WORKFLOW\" and name. Yes per docs: `@neatlogs.span(kind=\"WORKFLOW\")`, name param exists.\n\nActually, is the root span meaningfully a WORKFLOW? The docs say WORKFLOW is top-level entry point, one per trace root. The user said \"root neatlogs span named 'patient-zero-heal'\". So kind=\"WORKFLOW\" is appropriate. There is already workflow_name=\"heal\" in init. The named root will group.\n\nAlternatively kind=\"CHAIN\" since other spans are CHAIN. But root should be WORKFLOW per docs. Hmm. The user didn't specify kind. \"one root neatlogs span\". The existing detect/diagnose/quarantine/verify/promote are CHAIN. A root would best be WORKFLOW. I'll use WORKFLOW.\n\nBut wait, will a nested CHAIN under WORKFLOW work? Yes.\n\nHmm, but \"Change nothing else\" — adding decorator changes main's signature behavior minimally (captures input/output). That's inherent to wrapping.\n\nAlternatively use `with neatlogs.trace(\"patient-zero-heal\", kind=\"WORKFLOW\"):` at entrypoint around sys.exit? But then span closes after flush. Not good.\n\nLet me reconsider: Maybe the user wants the span to wrap main via a with-statement inside a new function. E.g.:\n\n```python\ndef heal():\n    with neatlogs.trace(\"patient-zero-heal\", kind=\"WORKFLOW\"):\n        return main()\n\nif __name__ == \"__main__\":\n    try:\n        sys.exit(heal())\n    finally:\n        neatlogs.flush()\n        neatlogs.shutdown()\n```\n\nBut that's an extra function. Decorator is cleaner.\n\nI think using the decorator is the idiomatic neatlogs approach. But the user said \"wrap main()\" which could be decorator. Let me go with decorator.\n\nWait, actually there's a concern: `@neatlogs.span` decorator applied to main, and inside main there is `try/finally: stop_server`. Fine.\n\nBut what about the `return` statements inside main? Decorator handles.\n\nNow, is there any issue with `neatlogs.span` being applied before `neatlogs.init`? No, init called at import time line 22, main defined line 257. Order is fine.\n\nLet me now make the edits.\n\nEdit 1: decorate main.\nEdit 2: remove flush/shutdown from main's finally.\nEdit 3: update entrypoint.\n\nLet me write them.\n\nActually, let me reconsider whether to keep `stop_server` before flush. In main's finally only stop_server remains. Good.\n\nLet me do the edits.",
+          "time": {
+            "start": 1791649383623,
+            "end": 1791649405785
+          },
+          "id": "prt_126a004c7001ysoN24jztK4bRp",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269ffb90001m6RJBlNYtNDWiC"
+        },
+        {
+          "type": "text",
+          "text": "I have what I need. The correct lifecycle calls are `neatlogs.flush()` then `neatlogs.shutdown()`, and a named root span uses `@neatlogs.span(kind=\"WORKFLOW\", name=...)`.",
+          "time": {
+            "start": 1791649405811,
+            "end": 1791649407353
+          },
+          "id": "prt_126a05b73001tjf243md6C05Ux",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269ffb90001m6RJBlNYtNDWiC"
+        },
+        {
+          "type": "tool",
+          "tool": "edit",
+          "callID": "call_00_avfacg47bqjh74gxc21uchlm",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/home/hpbenny/patient-zero/heal.py",
+              "oldString": "def main():\n    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)",
+              "newString": "@neatlogs.span(kind=\"WORKFLOW\", name=\"patient-zero-heal\")\ndef main():\n    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)"
+            },
+            "output": "Edit applied successfully.",
+            "metadata": {
+              "diagnostics": {},
+              "diff": "Index: /home/hpbenny/patient-zero/heal.py\n===================================================================\n--- /home/hpbenny/patient-zero/heal.py\n+++ /home/hpbenny/patient-zero/heal.py\n@@ -253,8 +253,9 @@\n     LESSONS.write_text(json.dumps(lessons, indent=2) + \"\\n\", encoding=\"utf-8\")\n     return LESSONS\n \n \n+@neatlogs.span(kind=\"WORKFLOW\", name=\"patient-zero-heal\")\n def main():\n     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)\n     log_file = open(LOG_PATH, \"w\")\n     server = subprocess.Popen(\n",
+              "filediff": {
+                "file": "/home/hpbenny/patient-zero/heal.py",
+                "patch": "Index: /home/hpbenny/patient-zero/heal.py\n===================================================================\n--- /home/hpbenny/patient-zero/heal.py\n+++ /home/hpbenny/patient-zero/heal.py\n@@ -253,8 +253,9 @@\n     LESSONS.write_text(json.dumps(lessons, indent=2) + \"\\n\", encoding=\"utf-8\")\n     return LESSONS\n \n \n+@neatlogs.span(kind=\"WORKFLOW\", name=\"patient-zero-heal\")\n def main():\n     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)\n     log_file = open(LOG_PATH, \"w\")\n     server = subprocess.Popen(\n",
+                "additions": 1,
+                "deletions": 0
+              },
+              "truncated": false
+            },
+            "title": "heal.py",
+            "time": {
+              "start": 1791649406557,
+              "end": 1791649406676
+            }
+          },
+          "id": "prt_126a05cb7001yoxnM0PHF2IRVV",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269ffb90001m6RJBlNYtNDWiC"
+        },
+        {
+          "type": "tool",
+          "tool": "edit",
+          "callID": "call_01_2oa8rtnl6conx41kqk0b6rf9",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/home/hpbenny/patient-zero/heal.py",
+              "oldString": "    finally:\n        stop_server(server, log_file)\n        neatlogs.flush()\n        neatlogs.shutdown()\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())",
+              "newString": "    finally:\n        stop_server(server, log_file)\n\n\nif __name__ == \"__main__\":\n    try:\n        sys.exit(main())\n    finally:\n        neatlogs.flush()\n        neatlogs.shutdown()"
+            },
+            "output": "Edit applied successfully.",
+            "metadata": {
+              "diagnostics": {},
+              "diff": "Index: /home/hpbenny/patient-zero/heal.py\n===================================================================\n--- /home/hpbenny/patient-zero/heal.py\n+++ /home/hpbenny/patient-zero/heal.py\n@@ -329,10 +329,12 @@\n         print(f\"Appended lesson to {LESSONS.relative_to(ROOT)}\")\n         return 0\n     finally:\n         stop_server(server, log_file)\n-        neatlogs.flush()\n-        neatlogs.shutdown()\n \n \n if __name__ == \"__main__\":\n-    sys.exit(main())\n+    try:\n+        sys.exit(main())\n+    finally:\n+        neatlogs.flush()\n+        neatlogs.shutdown()\n",
+              "filediff": {
+                "file": "/home/hpbenny/patient-zero/heal.py",
+                "patch": "Index: /home/hpbenny/patient-zero/heal.py\n===================================================================\n--- /home/hpbenny/patient-zero/heal.py\n+++ /home/hpbenny/patient-zero/heal.py\n@@ -329,10 +329,12 @@\n         print(f\"Appended lesson to {LESSONS.relative_to(ROOT)}\")\n         return 0\n     finally:\n         stop_server(server, log_file)\n-        neatlogs.flush()\n-        neatlogs.shutdown()\n \n \n if __name__ == \"__main__\":\n-    sys.exit(main())\n+    try:\n+        sys.exit(main())\n+    finally:\n+        neatlogs.flush()\n+        neatlogs.shutdown()\n",
+                "additions": 5,
+                "deletions": 3
+              },
+              "truncated": false
+            },
+            "title": "heal.py",
+            "time": {
+              "start": 1791649407300,
+              "end": 1791649407335
+            }
+          },
+          "id": "prt_126a05e6700140t9CvnQhqgPMd",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269ffb90001m6RJBlNYtNDWiC"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "1de139cc93e0aaad841e709d65001d83fb72b484",
+          "type": "step-finish",
+          "tokens": {
+            "total": 26944,
+            "input": 9090,
+            "output": 340,
+            "reasoning": 3306,
+            "cache": {
+              "write": 0,
+              "read": 14208
+            }
+          },
+          "cost": 0,
+          "id": "prt_126a062c2001Br2NUJslC7aVWz",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269ffb90001m6RJBlNYtNDWiC"
+        },
+        {
+          "type": "patch",
+          "hash": "1fdcb1a84193b3facaeb87a2da5a8437b2162721",
+          "files": [
+            "/home/hpbenny/patient-zero/heal.py"
+          ],
+          "id": "prt_126a06339001cqlYDnQLCbFvcp",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_1269ffb90001m6RJBlNYtNDWiC"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_1269fafdb001qSutedzEGa3DQi",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "/home/hpbenny/patient-zero",
+          "root": "/home/hpbenny/patient-zero"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 27128,
+          "input": 3674,
+          "output": 152,
+          "reasoning": 6,
+          "cache": {
+            "write": 0,
+            "read": 23296
+          }
+        },
+        "modelID": "big-pickle",
+        "providerID": "opencode",
+        "time": {
+          "created": 1791649407865,
+          "completed": 1791649411480
+        },
+        "finish": "tool-calls",
+        "id": "msg_126a06379001zy2EflORoT0hwC",
+        "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp"
+      },
+      "parts": [
+        {
+          "snapshot": "1de139cc93e0aaad841e709d65001d83fb72b484",
+          "type": "step-start",
+          "id": "prt_126a06d70001AVzfxZrflkDi4H",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_126a06379001zy2EflORoT0hwC"
+        },
+        {
+          "type": "reasoning",
+          "text": "Let me verify the result.",
+          "time": {
+            "start": 1791649410431,
+            "end": 1791649410441
+          },
+          "id": "prt_126a06d7f001r3Oh0BTwwd9rR0",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_126a06379001zy2EflORoT0hwC"
+        },
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_00_u7lsyornjc0mbagwga85lpmi",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/home/hpbenny/patient-zero/heal.py",
+              "offset": 255,
+              "limit": 20
+            },
+            "output": "<path>/home/hpbenny/patient-zero/heal.py</path>\n<type>file</type>\n<content>\n255: \n256: \n257: @neatlogs.span(kind=\"WORKFLOW\", name=\"patient-zero-heal\")\n258: def main():\n259:     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)\n260:     log_file = open(LOG_PATH, \"w\")\n261:     server = subprocess.Popen(\n262:         [sys.executable, \"-m\", \"flask\", \"--app\", \"app\", \"run\", \"--port\", PORT],\n263:         cwd=ROOT,\n264:         stdout=log_file,\n265:         stderr=subprocess.STDOUT,\n266:     )\n267: \n268:     try:\n269:         if not wait_for_health(HEALTH_URL):\n270:             print(\"Flask app did not become healthy in time.\")\n271:             return 2\n272: \n273:         attack = subprocess.run(\n274:             [sys.executable, \"attack.py\", BASE_URL],\n\n(Showing lines 255-274 of 340. Use offset=275 to continue.)\n</content>",
+            "metadata": {
+              "preview": "\n\n@neatlogs.span(kind=\"WORKFLOW\", name=\"patient-zero-heal\")\ndef main():\n    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)\n    log_file = open(LOG_PATH, \"w\")\n    server = subprocess.Popen(\n        [sys.executable, \"-m\", \"flask\", \"--app\", \"app\", \"run\", \"--port\", PORT],\n        cwd=ROOT,\n        stdout=log_file,\n        stderr=subprocess.STDOUT,\n    )\n\n    try:\n        if not wait_for_health(HEALTH_URL):\n            print(\"Flask app did not become healthy in time.\")\n            return 2\n\n        attack = subprocess.run(\n            [sys.executable, \"attack.py\", BASE_URL],",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/home/hpbenny/patient-zero/heal.py",
+                "text": "\n\n@neatlogs.span(kind=\"WORKFLOW\", name=\"patient-zero-heal\")\ndef main():\n    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)\n    log_file = open(LOG_PATH, \"w\")\n    server = subprocess.Popen(\n        [sys.executable, \"-m\", \"flask\", \"--app\", \"app\", \"run\", \"--port\", PORT],\n        cwd=ROOT,\n        stdout=log_file,\n        stderr=subprocess.STDOUT,\n    )\n\n    try:\n        if not wait_for_health(HEALTH_URL):\n            print(\"Flask app did not become healthy in time.\")\n            return 2\n\n        attack = subprocess.run(\n            [sys.executable, \"attack.py\", BASE_URL],",
+                "lineStart": 255,
+                "lineEnd": 274,
+                "totalLines": 340,
+                "truncated": true
+              }
+            },
+            "title": "heal.py",
+            "time": {
+              "start": 1791649410735,
+              "end": 1791649411126
+            }
+          },
+          "id": "prt_126a06d99001uWgKAbo2UsHdsE",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_126a06379001zy2EflORoT0hwC"
+        },
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_01_16swrjovwjxghpgw614c56dd",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/home/hpbenny/patient-zero/heal.py",
+              "offset": 328,
+              "limit": 12
+            },
+            "output": "<path>/home/hpbenny/patient-zero/heal.py</path>\n<type>file</type>\n<content>\n328:         append_lesson(root_cause, corrected_file, True, uncovered_attacks())\n329:         print(f\"Appended lesson to {LESSONS.relative_to(ROOT)}\")\n330:         return 0\n331:     finally:\n332:         stop_server(server, log_file)\n333: \n334: \n335: if __name__ == \"__main__\":\n336:     try:\n337:         sys.exit(main())\n338:     finally:\n339:         neatlogs.flush()\n\n(Showing lines 328-339 of 340. Use offset=340 to continue.)\n</content>",
+            "metadata": {
+              "preview": "        append_lesson(root_cause, corrected_file, True, uncovered_attacks())\n        print(f\"Appended lesson to {LESSONS.relative_to(ROOT)}\")\n        return 0\n    finally:\n        stop_server(server, log_file)\n\n\nif __name__ == \"__main__\":\n    try:\n        sys.exit(main())\n    finally:\n        neatlogs.flush()",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/home/hpbenny/patient-zero/heal.py",
+                "text": "        append_lesson(root_cause, corrected_file, True, uncovered_attacks())\n        print(f\"Appended lesson to {LESSONS.relative_to(ROOT)}\")\n        return 0\n    finally:\n        stop_server(server, log_file)\n\n\nif __name__ == \"__main__\":\n    try:\n        sys.exit(main())\n    finally:\n        neatlogs.flush()",
+                "lineStart": 328,
+                "lineEnd": 339,
+                "totalLines": 340,
+                "truncated": true
+              }
+            },
+            "title": "heal.py",
+            "time": {
+              "start": 1791649411066,
+              "end": 1791649411201
+            }
+          },
+          "id": "prt_126a06ec5001K2q0g2BIrTBz6c",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_126a06379001zy2EflORoT0hwC"
+        },
+        {
+          "reason": "tool-calls",
+          "snapshot": "1de139cc93e0aaad841e709d65001d83fb72b484",
+          "type": "step-finish",
+          "tokens": {
+            "total": 27128,
+            "input": 3674,
+            "output": 152,
+            "reasoning": 6,
+            "cache": {
+              "write": 0,
+              "read": 23296
+            }
+          },
+          "cost": 0,
+          "id": "prt_126a070fd001339ok0j66RCBR6",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_126a06379001zy2EflORoT0hwC"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_1269fafdb001qSutedzEGa3DQi",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "/home/hpbenny/patient-zero",
+          "root": "/home/hpbenny/patient-zero"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 27618,
+          "input": 676,
+          "output": 62,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 26880
+          }
+        },
+        "modelID": "big-pickle",
+        "providerID": "opencode",
+        "time": {
+          "created": 1791649411499,
+          "completed": 1791649414555
+        },
+        "finish": "stop",
+        "id": "msg_126a071ab001R7E1l9IfuXJKbi",
+        "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp"
+      },
+      "parts": [
+        {
+          "snapshot": "1de139cc93e0aaad841e709d65001d83fb72b484",
+          "type": "step-start",
+          "id": "prt_126a07b56001nEc5hZeoskA9T7",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_126a071ab001R7E1l9IfuXJKbi"
+        },
+        {
+          "type": "text",
+          "text": "Done. `main()` is now the `patient-zero-heal` WORKFLOW root span, and `flush()`/`shutdown()` run in the entrypoint's `finally` (before the `SystemExit` from `sys.exit` propagates), so the root span closes before export.",
+          "time": {
+            "start": 1791649414009,
+            "end": 1791649414312
+          },
+          "id": "prt_126a07b790012MCxf5C93InZQG",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_126a071ab001R7E1l9IfuXJKbi"
+        },
+        {
+          "reason": "stop",
+          "snapshot": "1de139cc93e0aaad841e709d65001d83fb72b484",
+          "type": "step-finish",
+          "tokens": {
+            "total": 27618,
+            "input": 676,
+            "output": 62,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 26880
+            }
+          },
+          "cost": 0,
+          "id": "prt_126a07cf9001Bv48dlVoKvkpj4",
+          "sessionID": "ses_ed960506cffeOYcopLkwPm1DSp",
+          "messageID": "msg_126a071ab001R7E1l9IfuXJKbi"
+        }
+      ]
+    }
+  ]
+}

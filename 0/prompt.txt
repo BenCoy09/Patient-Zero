@@ -1,0 +1,1 @@
+In heal.py, wrap main() in one root neatlogs span named "patient-zero-heal" with try/finally, calling neatlogs.flush() and neatlogs.shutdown() in the finally block before any sys.exit, so traces finalize. Check docs.neatlogs.com for the correct calls. Change nothing else.
