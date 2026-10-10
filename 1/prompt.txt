@@ -1,0 +1,1 @@
+Create a tiny Flask app in app/ with 3 endpoints (health,add item, list items) and pytest tests in tests/. Keep it under 80 lines. Don't add anything else. Add flask and pytest to requirement.txt
