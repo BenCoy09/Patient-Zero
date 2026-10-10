@@ -1,0 +1,1 @@
+Create attack.py using only the requests libary. It sends POSTs to http://localhost:5000/items with these JSON bodies: attack1 = [1,2]; variants = "hello", 123, null, true, [[1]]; attack3 = {"name":123}. For each, print the body and the status code, and label any 5xx as CRASH. Exit with code1 if any CRASH. Add requests to requirements.txt. Don't touch app/.

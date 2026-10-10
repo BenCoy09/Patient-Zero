@@ -1,0 +1,53 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4JYP7RVKGC8G5RY8V9DZFH7",
+  "session_id": "ses_eda16bbf2ffeXGuJe1ttPx2BjY",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-10T13:05:34.322550666Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "attack.py",
+    "requirements.txt"
+  ],
+  "agent": "OpenCode",
+  "model": "big-pickle",
+  "turn_id": "4eb511383e5b",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 2273,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 56320,
+    "output_tokens": 606,
+    "api_call_count": 6
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-10T13:05:34.316628553Z",
+    "agent_lines": 31,
+    "agent_removed": 0,
+    "human_added": 2,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 33,
+    "total_lines_changed": 33,
+    "agent_percentage": 93.93939393939394,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 33,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "evidence/app_before.log": 21,
+        "evidence/attack1_before.txt": 12
+      }
+    }
+  ]
+}
