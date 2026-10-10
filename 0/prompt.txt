@@ -1,0 +1,1 @@
+Install neatlogs with pip in a venv, then create trace_test.py that makes one LLM call with neatlogs tracing . Read the key from a .env file named NEATLOGS_API_KEY. Do not commit .env
