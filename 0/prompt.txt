@@ -1,0 +1,1 @@
+add requirements.txt (flask, pytest, neatlogs[openai], openai,python-dotenv) and pytest.ini with pythonpath = .so plain pytest works. Don't change anything else.
