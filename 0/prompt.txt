@@ -1,0 +1,1 @@
+First, make attack.py accept an optional base URL  argument,defaulting to http://localhost:5000. Wrap quarantine, verify and promote in neatlogs spanswith those names.
