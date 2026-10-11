@@ -2,6 +2,8 @@
 
 An app that gets attacked, heals itself, and writes an antibody so the same failure can't come back. Built solo for #neatHack (team: Trace Element).
 
+**Live demo:** https://patientzero-heal.duckdns.org (attack the healed app from your browser)
+
 ## How it works
 1. **Detect:** attack.py sends malformed requests to a small Flask app. Any 5xx is a crash.
 2. **Diagnose:** the healer reads the traceback and source, and Gemini proposes a fix.
