@@ -28,7 +28,7 @@ An app that gets attacked, heals itself, and writes an antibody so the same fail
 - Entire: docs/entire-1-checkpoints.png and the other entire-*.png files
 - neatlogs traces: docs/neatlogs-*.png
 - Before-fix evidence: evidence/ folder
-- Built in public: [PASTE YOUR #neatHack POST LINKS HERE]
+- Built in public: [https://x.com/benny___5/status/2109319024760828390,https://x.com/benny___5/status/2108891712546639986, https://x.com/benny___5/status/2109249813409615939]
 - Demo video: https://youtu.be/ERhntQSaOPk
 
 ## Run it
