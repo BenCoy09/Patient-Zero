@@ -29,7 +29,7 @@ An app that gets attacked, heals itself, and writes an antibody so the same fail
 - neatlogs traces: docs/neatlogs-*.png
 - Before-fix evidence: evidence/ folder
 - Built in public: [PASTE YOUR #neatHack POST LINKS HERE]
-- Demo video: [PASTE VIDEO LINK HERE]
+- Demo video: https://youtu.be/ERhntQSaOPk
 
 ## Run it
 pip install -r requirements.txt, add GEMINI_API_KEY and NEATLOGS_API_KEY to .env, then run python heal.py.
